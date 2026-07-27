@@ -25,7 +25,7 @@ export class AutoClearManager {
     private clearDelayTurns = 4,
   ) {}
 
-  /** Record a task completion. Call AFTER cascade logic. */
+  /** Record a task completion after its state is persisted. */
   trackCompletion(taskId: string, currentTurn: number): void {
     const mode = this.getMode();
     if (mode === "never") return;

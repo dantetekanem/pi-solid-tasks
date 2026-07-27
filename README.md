@@ -13,7 +13,6 @@ This is Leo's customized fork.
 - `tasks_done` — clear the list after every task is completed
 - `task_output` — read background task output
 - `task_stop` — stop background task execution
-- `task_execute` — run eligible tasks through the pi-subagents extension
 
 ## Development
 

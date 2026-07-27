@@ -6,7 +6,6 @@ import { dirname, isAbsolute, join } from "node:path";
 
 export interface TasksConfig {
   taskScope?: "memory" | "session" | "project";  // default: "session"
-  autoCascade?: boolean;   // default: false
   autoClearCompleted?: "never" | "on_list_complete" | "on_task_complete";  // default: "on_list_complete"
   showAll?: boolean;                     // default: false
   maxVisible?: number;                   // default: 5

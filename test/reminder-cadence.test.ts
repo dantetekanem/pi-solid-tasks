@@ -17,7 +17,6 @@ const TASK_TOOL_NAMES = new Set([
   "task_update",
   "task_output",
   "task_stop",
-  "task_execute",
 ]);
 
 const config: CadenceConfig = {
