@@ -73,8 +73,9 @@ function draftTaskKickoffPrompt(taskId: string, rawTask: string): string {
     "Before doing the implementation:",
     `1. Use task_get to read task #${taskId}.`,
     "2. Improve the task by using task_update to replace the [draft] subject and draft description with a clearer task and acceptance criteria.",
-    `3. Mark task #${taskId} in_progress, then complete the work.`,
-    `4. Mark task #${taskId} completed only when the work is fully done.`,
+    "3. If the draft contains or reveals repeated-item work, apply the inventory-first decomposition contract before changing any item.",
+    `4. Mark task #${taskId} in_progress, then complete the work.`,
+    `5. Mark task #${taskId} completed only when the work is fully done.`,
   ].join("\n");
 }
 
@@ -87,10 +88,12 @@ const REMINDER_INTERVAL = 4;
 /** How many turns completed tasks linger before auto-clearing. */
 const AUTO_CLEAR_DELAY = 4;
 
-const TASK_COMPLETION_CONTRACT = `The active task list is a completion contract. Work in dependency and task-ID order. Do not start a later task while an earlier task is unfinished. Do not leave the current task to move ahead: either finish it completely with evidence, or keep it in_progress and continue it. When required work is discovered, create or update the task before moving on and place it in the correct dependency order; do not hide it in prose. Mark a task completed only after its full acceptance criteria and verification are satisfied. After every task is completed and verified, delete the completed task records so task_list returns No tasks found.`;
+const TASK_COMPLETION_CONTRACT = `Treat the active list managed with task_create, task_update, task_list, and tasks_done as a completion contract. Work in dependency and task-ID order. Do not start a later task while an earlier task is unfinished. Do not leave the current task to move ahead: either finish it completely with evidence, or keep it in_progress and continue it. When required work is discovered, create or update the task before moving on and place it in the correct dependency order; do not hide it in prose. Mark a task completed only after its full acceptance criteria and verification are satisfied. After every task is completed and verified, delete the completed task records so task_list returns No tasks found.`;
+
+const BULK_WORK_DECOMPOSITION_CONTRACT = `Use task_create and task_update to make repeated-item work explicit. When a request contains or a task discovers several independently actionable items that would make one task opaque—always when there are more than five—separate inventory from execution. If the concrete items are not known yet, make the current task an inventory task and discover the full list without changing the items. If the current task was a broad placeholder, first use task_update to rewrite its subject and acceptance criteria around inventory only. Then, before changing any discovered item, create the execution tasks and verify the expanded graph with task_list. Do not perform the discovered bulk execution inside the inventory task. Complete the inventory task only after both the inventory and follow-up graph exist. Prefer one task per item when an item can fail or be verified independently; otherwise create named batches of 4–5 items. Every batch task must list its exact items and focused check. Use a different batch size only when its description records a concrete cohesion, ordering, safety, or verification reason. If the concrete items are already known, create the item or batch tasks before execution instead of creating a redundant inventory task.`;
 
 const SYSTEM_REMINDER = `<system-reminder>
-There are unfinished tracked tasks. ${TASK_COMPLETION_CONTRACT}
+There are unfinished tracked tasks. ${TASK_COMPLETION_CONTRACT} ${BULK_WORK_DECOMPOSITION_CONTRACT}
 Make sure that you NEVER mention this reminder to the user.
 </system-reminder>`;
 
@@ -322,6 +325,10 @@ Use this tool proactively in these scenarios:
 - When you start working on a task - Mark it as in_progress BEFORE beginning work
 - After completing a task - Mark it as completed and add any new follow-up tasks discovered during implementation
 
+## Repeated or Bulk Work
+
+${BULK_WORK_DECOMPOSITION_CONTRACT}
+
 ## When NOT to Use This Tool
 
 Skip using this tool when:
@@ -348,9 +355,10 @@ All tasks are created with status \`pending\`.
 - Check task_list first to avoid creating duplicate tasks`,
     promptGuidelines: [
       TASK_COMPLETION_CONTRACT,
-      "Capture every new user requirement or required follow-up as a task before moving on; append it after existing work or connect it with dependencies instead of silently replacing unfinished tasks.",
-      "Keep one top-level task in_progress until it is completed and verified.",
-      "Use task_list after each material completion, continue the earliest unfinished task, and clean every completed record only after the whole list is verified complete.",
+      BULK_WORK_DECOMPOSITION_CONTRACT,
+      "Use task_create to capture every new user requirement or required follow-up before moving on; append it after existing work or connect it with dependencies instead of silently replacing unfinished tasks.",
+      "Use task_update to keep exactly the earliest runnable task in_progress, and keep pending follow-up tasks visible instead of folding their work into the active task.",
+      "Use task_list after each material completion and continue the earliest unfinished task; use tasks_done only after the whole list is verified complete.",
     ],
     parameters: Type.Object({
       subject: Type.String({ description: "A brief title for the task" }),

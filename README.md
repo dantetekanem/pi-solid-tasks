@@ -2,7 +2,7 @@
 
 A focused task-tracking extension for [pi](https://pi.dev). It keeps multi-step work explicit, prevents unfinished tasks from being skipped, and clears a completed list in one call.
 
-This is Leo's customized fork.
+This is Leo's customized fork. It is distributed directly from GitHub and is not published to a package registry.
 
 ## Tools
 
@@ -22,13 +22,10 @@ Load the extension directly:
 pi -e ./src/index.ts
 ```
 
-Run checks:
+Run the repository check:
 
 ```bash
-pnpm test
-pnpm typecheck
-pnpm lint
-pnpm build
+pnpm check
 ```
 
 ## Behavior
@@ -37,4 +34,18 @@ pnpm build
 - A task is completed only after its acceptance criteria are verified.
 - Interrupted work stays open.
 - Required follow-up work is added to the list before progression.
+- Repeated-item work is split when one task would hide partial progress; more than five items always trigger decomposition.
+- When the concrete items are unknown, the active task becomes an inventory task and does not change those items.
+- Before execution begins, the inventory expands into one task per independently verifiable item or named batches of 4–5 exact items.
 - `tasks_done` refuses cleanup while any task is pending or in progress.
+
+### Bulk-work example
+
+For a request to clean 20 branches, the task graph should evolve instead of keeping all cleanup in one task:
+
+1. Start `#1 Inventory branches eligible for cleanup` and discover the full list without deleting branches.
+2. Create follow-up tasks such as `#2 Remove branch-01 through branch-05`, continuing through `#5 Remove branch-16 through branch-20`. Each task description lists its five exact branch names and its focused verification.
+3. Verify the expanded graph with `task_list`, then complete the inventory task.
+4. Execute and verify tasks `#2` through `#5` in order. If one batch fails, that batch stays open without hiding which branches remain.
+
+Use one task per branch when deletion or verification is independently risky. A batch size outside 4–5 needs a concrete cohesion, ordering, safety, or verification reason in its task description.

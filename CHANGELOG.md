@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.7.5
+
+### Changed
+
+- Repeated-item work now follows an inventory-first task contract and expands into independently verifiable item tasks or named batches of 4–5 exact items before execution.
+- Mark the GitHub-only fork as private and replace its npm publish hook with an explicit repository check command.
+
 ## 0.7.4
 
 ### Added

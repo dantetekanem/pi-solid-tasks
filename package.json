@@ -1,6 +1,7 @@
 {
   "name": "@dantetekanem/pi-tasks",
-  "version": "0.7.4",
+  "version": "0.7.5",
+  "private": true,
   "description": "Strict task tracking and coordination for pi.",
   "author": "Leonardo Pereira",
   "license": "MIT",
@@ -25,7 +26,7 @@
   },
   "scripts": {
     "build": "tsc",
-    "prepublishOnly": "pnpm lint && pnpm typecheck && pnpm test && pnpm build",
+    "check": "pnpm lint && pnpm typecheck && pnpm test && pnpm build",
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",

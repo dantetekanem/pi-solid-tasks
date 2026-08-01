@@ -116,6 +116,7 @@ describe("/add-task", () => {
     expect(task.content[0].text).toContain("[draft] ship the manual task");
     expect(task.content[0].text).toContain("Manual draft task inserted with /add-task.");
     expect(mock.pi.sendUserMessage).toHaveBeenCalledWith(expect.stringContaining("Improve the task by using task_update"));
+    expect(mock.pi.sendUserMessage).toHaveBeenCalledWith(expect.stringContaining("inventory-first decomposition contract"));
   });
 
   it("queues the refinement prompt when the agent is busy", async () => {
@@ -134,6 +135,22 @@ describe("core task tools", () => {
       expect(mock.tools.has(name)).toBe(true);
     }
     expect(mock.tools.has("task_execute")).toBe(false);
+  });
+
+  it("requires discovery tasks to expand repeated work into bounded execution tasks", () => {
+    const mock = mockPi();
+    initExtension(mock.pi as any);
+    const taskCreate = mock.tools.get("task_create");
+    const guidance = [taskCreate.description, ...taskCreate.promptGuidelines].join("\n");
+
+    expect(guidance).toContain("inventory task");
+    expect(guidance).toContain("more than five");
+    expect(guidance).toContain("before changing any discovered item");
+    expect(guidance).toContain("Do not perform the discovered bulk execution inside the inventory task");
+    expect(guidance).toContain("4–5 items");
+    expect(guidance).toContain("exact items");
+    expect(guidance).toContain("keep pending follow-up tasks visible");
+    expect(guidance).not.toContain("Keep one top-level task in_progress");
   });
 
   it("enforces task order and clears only fully completed lists", async () => {
