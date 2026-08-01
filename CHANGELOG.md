@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.6
+
+### Changed
+
+- Replace repository-distribution copy with attribution to the original `tintinweb/pi-tasks` project.
+
 ## 0.7.5
 
 ### Changed

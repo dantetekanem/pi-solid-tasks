@@ -2,7 +2,7 @@
 
 A focused task-tracking extension for [pi](https://pi.dev). It keeps multi-step work explicit, prevents unfinished tasks from being skipped, and clears a completed list in one call.
 
-This is Leo's customized fork. It is distributed directly from GitHub and is not published to a package registry.
+This project is derived from [tintinweb/pi-tasks](https://github.com/tintinweb/pi-tasks), originally created by tintinweb.
 
 ## Tools
 
