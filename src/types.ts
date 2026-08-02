@@ -4,11 +4,18 @@
 
 export type TaskStatus = "pending" | "in_progress" | "completed";
 
+export type TaskCreatePosition =
+  | { type: "beginning" }
+  | { type: "end" }
+  | { type: "before"; taskId: string }
+  | { type: "after"; taskId: string };
+
 export interface Task {
   id: string;
   subject: string;
   description: string;
   status: TaskStatus;
+  order: number;
   activeForm?: string;
   owner?: string;
   metadata: Record<string, any>;

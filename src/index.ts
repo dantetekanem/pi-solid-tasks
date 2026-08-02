@@ -28,7 +28,7 @@ import {
   onTurnStart,
   resetCadenceState,
 } from "./reminder-cadence.js";
-import { TaskStore } from "./task-store.js";
+import { TaskPositionError, TaskStore } from "./task-store.js";
 import { loadTasksConfig } from "./tasks-config.js";
 import type { Task } from "./types.js";
 import { openSettingsMenu } from "./ui/settings-menu.js";
@@ -88,7 +88,7 @@ const REMINDER_INTERVAL = 4;
 /** How many turns completed tasks linger before auto-clearing. */
 const AUTO_CLEAR_DELAY = 4;
 
-const TASK_COMPLETION_CONTRACT = `Treat the active list managed with task_create, task_update, task_list, and tasks_done as a completion contract. Work in dependency and task-ID order. Do not start a later task while an earlier task is unfinished. Do not leave the current task to move ahead: either finish it completely with evidence, or keep it in_progress and continue it. When required work is discovered, create or update the task before moving on and place it in the correct dependency order; do not hide it in prose. Mark a task completed only after its full acceptance criteria and verification are satisfied. After every task is completed and verified, delete the completed task records so task_list returns No tasks found.`;
+const TASK_COMPLETION_CONTRACT = `Treat the active list managed with task_create, task_update, task_list, and tasks_done as a completion contract. Work in dependency and listed task order. Do not start a later task while an earlier task is unfinished. Do not leave the current task to move ahead: either finish it completely with evidence, or keep it in_progress and continue it. When required work is discovered, create or update the task before moving on and place it in the correct dependency order; do not hide it in prose. Mark a task completed only after its full acceptance criteria and verification are satisfied. After every task is completed and verified, delete the completed task records so task_list returns No tasks found.`;
 
 const BULK_WORK_DECOMPOSITION_CONTRACT = `Use task_create and task_update to make repeated-item work explicit. When a request contains or a task discovers several independently actionable items that would make one task opaque—always when there are more than five—separate inventory from execution. If the concrete items are not known yet, make the current task an inventory task and discover the full list without changing the items. If the current task was a broad placeholder, first use task_update to rewrite its subject and acceptance criteria around inventory only. Then, before changing any discovered item, create the execution tasks and verify the expanded graph with task_list. Do not perform the discovered bulk execution inside the inventory task. Complete the inventory task only after both the inventory and follow-up graph exist. Prefer one task per item when an item can fail or be verified independently; otherwise create named batches of 4–5 items. Every batch task must list its exact items and focused check. Use a different batch size only when its description records a concrete cohesion, ordering, safety, or verification reason. If the concrete items are already known, create the item or batch tasks before execution instead of creating a redundant inventory task.`;
 
@@ -136,12 +136,12 @@ export default function (pi: ExtensionAPI) {
   const tracker = new ProcessTracker();
   const widget = new TaskWidget(store, cfg);
 
-  /** Return lower-ID work that must finish before a task can advance. */
+  /** Return earlier listed work that must finish before a task can advance. */
   function unfinishedEarlierTasks(taskId: string): Task[] {
-    const currentId = Number(taskId);
-    return store.list().filter(candidate =>
-      Number(candidate.id) < currentId && candidate.status !== "completed"
-    );
+    const tasks = store.list();
+    const currentIndex = tasks.findIndex(task => task.id === taskId);
+    if (currentIndex < 0) return [];
+    return tasks.slice(0, currentIndex).filter(task => task.status !== "completed");
   }
 
   const autoClear = new AutoClearManager(() => store, () => cfg.autoClearCompleted ?? "on_list_complete", AUTO_CLEAR_DELAY);
@@ -344,6 +344,7 @@ NOTE that you should not use this tool if there is only one trivial task to do. 
 - **subject**: A brief, actionable title in imperative form (e.g., "Fix authentication bug in login flow")
 - **description**: Detailed description of what needs to be done, including context and acceptance criteria
 - **activeForm** (optional): Present continuous form shown in the spinner when the task is in_progress (e.g., "Fixing authentication bug"). If omitted, the spinner shows the subject instead.
+- **position** (optional): Place the new task at the beginning of open tasks, at the end of open tasks, or \`before\`/\`after\` a referenced open task. Omit it to use the end of open tasks.
 
 All tasks are created with status \`pending\`.
 
@@ -365,14 +366,37 @@ All tasks are created with status \`pending\`.
       description: Type.String({ description: "A detailed description of what needs to be done" }),
       activeForm: Type.Optional(Type.String({ description: "Present continuous form shown in the spinner when in_progress (e.g., 'Running tests')" })),
       metadata: Type.Optional(Type.Record(Type.String(), Type.Any(), { description: "Arbitrary metadata to attach to the task" })),
+      position: Type.Optional(Type.Union([
+        Type.Object({ type: Type.Literal("beginning") }),
+        Type.Object({ type: Type.Literal("end") }),
+        Type.Object({
+          type: Type.Literal("before"),
+          taskId: Type.String({ description: "ID of the open task to create this task before" }),
+        }),
+        Type.Object({
+          type: Type.Literal("after"),
+          taskId: Type.String({ description: "ID of the open task to create this task after" }),
+        }),
+      ], { description: "Where to place the task among open tasks. Defaults to end." })),
     }),
 
     execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
-      autoClear.resetBatchCountdown();
       const meta = params.metadata ?? {};
-      const task = store.create(params.subject, params.description, params.activeForm, Object.keys(meta).length > 0 ? meta : undefined);
-      widget.update();
-      return Promise.resolve(textResult(`Task #${task.id} created successfully: ${task.subject}`));
+      try {
+        const task = store.create(
+          params.subject,
+          params.description,
+          params.activeForm,
+          Object.keys(meta).length > 0 ? meta : undefined,
+          params.position,
+        );
+        autoClear.resetBatchCountdown();
+        widget.update();
+        return Promise.resolve(textResult(`Task #${task.id} created successfully: ${task.subject}`));
+      } catch (error) {
+        if (error instanceof TaskPositionError) return Promise.resolve(textResult(error.message));
+        throw error;
+      }
     },
   });
 
@@ -391,12 +415,12 @@ All tasks are created with status \`pending\`.
 - To check overall progress on the project
 - To find tasks that are blocked and need dependencies resolved
 - After completing a task, to check for newly unblocked work or claim the next available task
-- **Prefer working on tasks in ID order** (lowest ID first) when multiple tasks are available, as earlier tasks often set up context for later ones
+- Prefer working in the listed task order; task IDs remain stable references and do not determine position
 
 ## Output
 
-Returns a summary of each task:
-- **id**: Task identifier (use with task_get, task_update)
+Returns open tasks in their configured order, followed by completed tasks. Each summary includes:
+- **id**: Stable task identifier (use with task_get, task_update)
 - **subject**: Brief description of the task
 - **status**: 'pending', 'in_progress', or 'completed'
 - **owner**: Owner identifier if assigned, empty if available
@@ -409,15 +433,7 @@ Use task_get with a specific task ID to view full details including description 
       const tasks = store.list();
       if (tasks.length === 0) return Promise.resolve(textResult("No tasks found"));
 
-      // Sort: pending first (by ID), then in_progress (by ID), then completed (by ID)
-      const statusOrder: Record<string, number> = { pending: 0, in_progress: 1, completed: 2 };
-      const sorted = [...tasks].sort((a, b) => {
-        const so = (statusOrder[a.status] ?? 0) - (statusOrder[b.status] ?? 0);
-        if (so !== 0) return so;
-        return Number(a.id) - Number(b.id);
-      });
-
-      const lines = sorted.map(task => {
+      const lines = tasks.map(task => {
         let line = `#${task.id} [${task.status}] ${task.subject}`;
 
         if (task.owner) {

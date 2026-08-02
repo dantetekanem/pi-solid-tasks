@@ -6,7 +6,7 @@ This project is derived from [tintinweb/pi-tasks](https://github.com/tintinweb/p
 
 ## Tools
 
-- `task_create` — create a task
+- `task_create` — create a task at a chosen position in open work
 - `task_list` — list tracked work
 - `task_get` — inspect one task
 - `task_update` — update status, ownership, metadata, or dependencies
@@ -30,7 +30,9 @@ pnpm check
 
 ## Behavior
 
-- Work proceeds in task and dependency order.
+- Work proceeds in the listed task and dependency order; task IDs remain stable references rather than positions.
+- `task_create.position` supports `beginning`, `end`, `before`, and `after`; omitting it appends to the end of open tasks.
+- `before` and `after` require the ID of an existing open task.
 - A task is completed only after its acceptance criteria are verified.
 - Interrupted work stays open.
 - Required follow-up work is added to the list before progression.

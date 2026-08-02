@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.7
+
+### Added
+
+- Create tasks before or after an open task, or at the beginning or end of open work; the end remains the default.
+
 ## 0.7.6
 
 ### Changed

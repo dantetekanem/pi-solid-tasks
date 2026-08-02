@@ -29,6 +29,71 @@ describe("TaskStore (in-memory)", () => {
     expect(t.metadata).toEqual({ key: "value" });
   });
 
+  it("creates tasks at the end of open work by default or explicitly", () => {
+    store.create("First", "Desc");
+    store.create("Second", "Desc");
+    store.create("Beginning", "Desc", undefined, undefined, { type: "beginning" });
+    store.create("Default end", "Desc");
+    store.create("Explicit end", "Desc", undefined, undefined, { type: "end" });
+
+    expect(store.list().map(task => task.subject)).toEqual([
+      "Beginning",
+      "First",
+      "Second",
+      "Default end",
+      "Explicit end",
+    ]);
+  });
+
+  it("creates tasks before and after an open task", () => {
+    store.create("First", "Desc");
+    const second = store.create("Second", "Desc");
+    store.create("Third", "Desc");
+
+    store.create("Before second", "Desc", undefined, undefined, { type: "before", taskId: second.id });
+    store.create("After second", "Desc", undefined, undefined, { type: "after", taskId: second.id });
+
+    expect(store.list().map(task => task.subject)).toEqual([
+      "First",
+      "Before second",
+      "Second",
+      "After second",
+      "Third",
+    ]);
+  });
+
+  it("positions beginning and end relative to open tasks, ahead of completed tasks", () => {
+    const completed = store.create("Completed", "Desc");
+    store.update(completed.id, { status: "completed" });
+    store.create("Existing open", "Desc");
+
+    store.create("Beginning", "Desc", undefined, undefined, { type: "beginning" });
+    store.create("End", "Desc", undefined, undefined, { type: "end" });
+
+    expect(store.list().map(task => task.subject)).toEqual([
+      "Beginning",
+      "Existing open",
+      "End",
+      "Completed",
+    ]);
+  });
+
+  it("rejects missing and completed position anchors without consuming an ID", () => {
+    const completed = store.create("Completed", "Desc");
+    store.update(completed.id, { status: "completed" });
+
+    expect(() => store.create("Missing anchor", "Desc", undefined, undefined, {
+      type: "before",
+      taskId: "999",
+    })).toThrow("Task #999 not found");
+    expect(() => store.create("Completed anchor", "Desc", undefined, undefined, {
+      type: "after",
+      taskId: completed.id,
+    })).toThrow("Task #1 is completed");
+
+    expect(store.create("Next valid task", "Desc").id).toBe("2");
+  });
+
   it("gets a task by ID", () => {
     store.create("Test", "Desc");
     const task = store.get("1");
@@ -41,12 +106,12 @@ describe("TaskStore (in-memory)", () => {
     expect(store.get("999")).toBeUndefined();
   });
 
-  it("lists all tasks sorted by ID", () => {
+  it("lists tasks sorted by ID when requested", () => {
     store.create("Task 3", "Desc");
     store.create("Task 1", "Desc");
     store.create("Task 2", "Desc");
 
-    const tasks = store.list();
+    const tasks = store.list("id");
     expect(tasks.map(t => t.id)).toEqual(["1", "2", "3"]);
   });
 
@@ -336,7 +401,7 @@ describe("TaskStore (in-memory)", () => {
     expect(store.clearCompleted()).toBe(0);
   });
 
-  it("list sorts pending → in_progress → completed with all three present", () => {
+  it("lists open tasks in queue order before completed tasks", () => {
     store.create("Pending task", "Desc");
     store.create("Completed task", "Desc");
     store.create("In-progress task", "Desc");
@@ -346,17 +411,8 @@ describe("TaskStore (in-memory)", () => {
     store.update("3", { status: "in_progress" });
 
     const tasks = store.list();
-    // Store returns by ID; task_list tool sorts by status group
-    // Here we verify the raw list order (by ID), then test status-grouped sort
-    const statusOrder: Record<string, number> = { pending: 0, in_progress: 1, completed: 2 };
-    const sorted = [...tasks].sort((a, b) => {
-      const so = (statusOrder[a.status] ?? 0) - (statusOrder[b.status] ?? 0);
-      if (so !== 0) return so;
-      return Number(a.id) - Number(b.id);
-    });
-
-    expect(sorted.map(t => t.id)).toEqual(["1", "4", "3", "2"]);
-    expect(sorted.map(t => t.status)).toEqual(["pending", "pending", "in_progress", "completed"]);
+    expect(tasks.map(t => t.id)).toEqual(["1", "3", "4", "2"]);
+    expect(tasks.map(t => t.status)).toEqual(["pending", "in_progress", "pending", "completed"]);
   });
 });
 
@@ -430,6 +486,16 @@ describe("TaskStore (file-backed)", () => {
     const store2 = new TaskStore(testListId);
     const t3 = store2.create("Task 3", "Desc");
     expect(t3.id).toBe("3");
+  });
+
+  it("persists positioned task order across instances", () => {
+    const store1 = new TaskStore(testListId);
+    store1.create("First", "Desc");
+    const second = store1.create("Second", "Desc");
+    store1.create("Inserted", "Desc", undefined, undefined, { type: "before", taskId: second.id });
+
+    const store2 = new TaskStore(testListId);
+    expect(store2.list().map(task => task.subject)).toEqual(["First", "Inserted", "Second"]);
   });
 });
 

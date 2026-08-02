@@ -181,4 +181,94 @@ describe("core task tools", () => {
     const task = await mock.executeTool("task_get", { taskId: "1" });
     expect(task.content[0].text).toContain('Metadata: {"source":"manual"}');
   });
+
+  it("creates tasks before, after, at the beginning, or at the end of open work", async () => {
+    const mock = mockPi();
+    initExtension(mock.pi as any);
+    const taskCreate = mock.tools.get("task_create");
+
+    expect(taskCreate.parameters.properties.position).toBeDefined();
+    expect(taskCreate.description).toContain("beginning of open tasks");
+    expect(taskCreate.description).toContain("end of open tasks");
+
+    await mock.executeTool("task_create", { subject: "First", description: "desc" });
+    await mock.executeTool("task_create", { subject: "Second", description: "desc" });
+    await mock.executeTool("task_create", { subject: "Third", description: "desc" });
+    await mock.executeTool("task_create", {
+      subject: "Before second",
+      description: "desc",
+      position: { type: "before", taskId: "2" },
+    });
+    await mock.executeTool("task_create", {
+      subject: "After second",
+      description: "desc",
+      position: { type: "after", taskId: "2" },
+    });
+    await mock.executeTool("task_create", {
+      subject: "Beginning",
+      description: "desc",
+      position: { type: "beginning" },
+    });
+    await mock.executeTool("task_create", {
+      subject: "Explicit end",
+      description: "desc",
+      position: { type: "end" },
+    });
+    await mock.executeTool("task_create", { subject: "Default end", description: "desc" });
+
+    const list = await mock.executeTool("task_list", {});
+    expect(list.content[0].text.split("\n").map((line: string) => line.match(/#(\d+)/)?.[1])).toEqual([
+      "6",
+      "1",
+      "4",
+      "2",
+      "5",
+      "3",
+      "7",
+      "8",
+    ]);
+  });
+
+  it("enforces positioned task order instead of numeric ID order", async () => {
+    const mock = mockPi();
+    initExtension(mock.pi as any);
+    await mock.executeTool("task_create", { subject: "First", description: "desc" });
+    await mock.executeTool("task_create", { subject: "Second", description: "desc" });
+    await mock.executeTool("task_create", {
+      subject: "Inserted before second",
+      description: "desc",
+      position: { type: "before", taskId: "2" },
+    });
+    await mock.executeTool("task_update", { taskId: "1", status: "completed" });
+
+    const skipped = await mock.executeTool("task_update", { taskId: "2", status: "in_progress" });
+    expect(skipped.content[0].text).toContain("#3 [pending]");
+
+    const inserted = await mock.executeTool("task_update", { taskId: "3", status: "in_progress" });
+    expect(inserted.content[0].text).toContain("Updated task #3 status");
+  });
+
+  it("rejects missing or completed position anchors without creating a task", async () => {
+    const mock = mockPi();
+    initExtension(mock.pi as any);
+    await mock.executeTool("task_create", { subject: "Completed", description: "desc" });
+    await mock.executeTool("task_update", { taskId: "1", status: "completed" });
+
+    const missing = await mock.executeTool("task_create", {
+      subject: "Missing anchor",
+      description: "desc",
+      position: { type: "before", taskId: "999" },
+    });
+    expect(missing.content[0].text).toContain("Task #999 not found");
+
+    const completed = await mock.executeTool("task_create", {
+      subject: "Completed anchor",
+      description: "desc",
+      position: { type: "after", taskId: "1" },
+    });
+    expect(completed.content[0].text).toContain("Task #1 is completed");
+
+    const created = await mock.executeTool("task_create", { subject: "Valid", description: "desc" });
+    expect(created.content[0].text).toContain("Task #2 created successfully");
+  });
 });

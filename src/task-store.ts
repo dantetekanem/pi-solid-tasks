@@ -8,26 +8,41 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
-import type { Task, TaskStatus, TaskStoreData } from "./types.js";
+import type { Task, TaskCreatePosition, TaskStatus, TaskStoreData } from "./types.js";
 
 function sortById(a: Task, b: Task): number {
   return Number(a.id) - Number(b.id);
 }
 
+function compareTaskOrder(a: Task, b: Task): number {
+  return a.order - b.order || sortById(a, b);
+}
+
+function sortByQueue(a: Task, b: Task): number {
+  const completedRank = (task: Task) => task.status === "completed" ? 1 : 0;
+  return completedRank(a) - completedRank(b) || compareTaskOrder(a, b);
+}
+
 function sortByStatus(a: Task, b: Task): number {
   const rank = (s: string) => s === "completed" ? 0 : s === "in_progress" ? 1 : 2;
-  return rank(a.status) - rank(b.status) || Number(a.id) - Number(b.id);
+  return rank(a.status) - rank(b.status) || compareTaskOrder(a, b);
 }
 
 function sortByRecent(a: Task, b: Task): number {
-  return b.updatedAt - a.updatedAt || Number(b.id) - Number(a.id);
+  return b.updatedAt - a.updatedAt || sortById(a, b);
 }
 
 function sortByOldest(a: Task, b: Task): number {
-  return a.updatedAt - b.updatedAt || Number(a.id) - Number(b.id);
+  return a.updatedAt - b.updatedAt || sortById(a, b);
 }
 
-const SORT_FNS = { id: sortById, status: sortByStatus, recent: sortByRecent, oldest: sortByOldest };
+const SORT_FNS = {
+  queue: sortByQueue,
+  id: sortById,
+  status: sortByStatus,
+  recent: sortByRecent,
+  oldest: sortByOldest,
+};
 
 const TASKS_DIR = join(homedir(), ".pi", "tasks");
 const LOCK_RETRY_MS = 50;
@@ -69,6 +84,10 @@ function isProcessRunning(pid: number): boolean {
   try { process.kill(pid, 0); return true; } catch { return false; }
 }
 
+export class TaskPositionError extends Error {
+  override name = "TaskPositionError";
+}
+
 export class TaskStore {
   private filePath: string | undefined;
   private lockPath: string | undefined;
@@ -95,8 +114,15 @@ export class TaskStore {
       const data: TaskStoreData = JSON.parse(readFileSync(this.filePath, "utf-8"));
       this.nextId = data.nextId;
       this.tasks.clear();
-      for (const t of data.tasks) {
-        this.tasks.set(t.id, t);
+      const tasks = data.tasks
+        .map((task, index) => ({
+          ...task,
+          order: Number.isFinite(task.order) ? task.order : index,
+        }))
+        .sort(compareTaskOrder);
+      for (const [index, task] of tasks.entries()) {
+        task.order = index;
+        this.tasks.set(task.id, task);
       }
     } catch { /* corrupt file — start fresh */ }
   }
@@ -106,7 +132,7 @@ export class TaskStore {
     if (!this.filePath) return;
     const data: TaskStoreData = {
       nextId: this.nextId,
-      tasks: Array.from(this.tasks.values()),
+      tasks: Array.from(this.tasks.values()).sort(compareTaskOrder),
     };
     const tmpPath = this.filePath + ".tmp";
     writeFileSync(tmpPath, JSON.stringify(data, null, 2));
@@ -127,14 +153,43 @@ export class TaskStore {
     }
   }
 
-  create(subject: string, description: string, activeForm?: string, metadata?: Record<string, any>): Task {
+  private orderedTasks(): Task[] {
+    return Array.from(this.tasks.values()).sort(compareTaskOrder);
+  }
+
+  private createIndex(position: TaskCreatePosition, openTasks: Task[]): number {
+    if (position.type === "beginning") return 0;
+    if (position.type === "end") return openTasks.length;
+
+    const anchor = this.tasks.get(position.taskId);
+    if (!anchor) throw new TaskPositionError(`Task #${position.taskId} not found`);
+    if (anchor.status === "completed") {
+      throw new TaskPositionError(`Task #${position.taskId} is completed; choose an open task as the position anchor`);
+    }
+
+    const anchorIndex = openTasks.findIndex(task => task.id === anchor.id);
+    return position.type === "before" ? anchorIndex : anchorIndex + 1;
+  }
+
+  create(
+    subject: string,
+    description: string,
+    activeForm?: string,
+    metadata?: Record<string, any>,
+    position: TaskCreatePosition = { type: "end" },
+  ): Task {
     return this.withLock(() => {
+      const ordered = this.orderedTasks();
+      const openTasks = ordered.filter(task => task.status !== "completed");
+      const completedTasks = ordered.filter(task => task.status === "completed");
+      const insertionIndex = this.createIndex(position, openTasks);
       const now = Date.now();
       const task: Task = {
         id: String(this.nextId++),
         subject,
         description,
         status: "pending",
+        order: 0,
         activeForm,
         owner: undefined,
         metadata: metadata ?? {},
@@ -143,6 +198,11 @@ export class TaskStore {
         createdAt: now,
         updatedAt: now,
       };
+
+      openTasks.splice(insertionIndex, 0, task);
+      for (const [index, orderedTask] of [...openTasks, ...completedTasks].entries()) {
+        orderedTask.order = index;
+      }
       this.tasks.set(task.id, task);
       return task;
     });
@@ -153,8 +213,8 @@ export class TaskStore {
     return this.tasks.get(id);
   }
 
-  /** List all tasks, sorted by the given order (defaults to ID ascending). */
-  list(sortOrder: "id" | "status" | "recent" | "oldest" = "id"): Task[] {
+  /** List all tasks, sorted by the given order (defaults to open task order, then completed). */
+  list(sortOrder: "queue" | "id" | "status" | "recent" | "oldest" = "queue"): Task[] {
     if (this.filePath) this.load();
     return Array.from(this.tasks.values()).sort(SORT_FNS[sortOrder]);
   }
