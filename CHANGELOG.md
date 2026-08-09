@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.8.0
+
+### Added
+
+- Run ready independent tasks in parallel with distinct owners while dependent tasks wait for every declared prerequisite.
+- Reject missing, self-referential, and cyclic dependency updates atomically.
+- Reduce dependency graphs to immediate prerequisites and remove redundant transitive blocker edges.
+- Enforce dependency-safe completion and reject mutations that would retroactively block active/completed work.
+- Display multiple in-progress tasks within the configured widget limit.
+
+### Changed
+
+- Use list order to prevent jumping past earlier pending work while still allowing later tasks that are prerequisites or parallel work actively owned by someone else.
+- Require each owner to finish or fully undo its current task before claiming another; unfinished work can no longer be parked through `task_update`.
+
 ## 0.7.7
 
 ### Added

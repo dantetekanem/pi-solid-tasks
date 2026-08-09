@@ -88,6 +88,22 @@ export class TaskPositionError extends Error {
   override name = "TaskPositionError";
 }
 
+export type TaskUpdateErrorCode = "missing_dependency" | "self_dependency" | "dependency_cycle" | "blocked" | "invalid_status" | "owner_busy";
+
+export class TaskUpdateError extends Error {
+  override name = "TaskUpdateError";
+
+  constructor(
+    readonly code: TaskUpdateErrorCode,
+    message: string,
+    readonly taskIds: string[] = [],
+  ) {
+    super(message);
+  }
+}
+
+type DependencyGraph = Map<string, Set<string>>;
+
 export class TaskStore {
   private filePath: string | undefined;
   private lockPath: string | undefined;
@@ -124,6 +140,8 @@ export class TaskStore {
         task.order = index;
         this.tasks.set(task.id, task);
       }
+      const normalizedGraph = this.normalizedDependencyGraph(this.dependencyGraph());
+      if (normalizedGraph) this.applyDependencyGraph(normalizedGraph, false);
     } catch { /* corrupt file — start fresh */ }
   }
 
@@ -219,6 +237,172 @@ export class TaskStore {
     return Array.from(this.tasks.values()).sort(SORT_FNS[sortOrder]);
   }
 
+  /** Build the canonical blocker -> dependent graph from both persisted edge directions. */
+  private dependencyGraph(): DependencyGraph {
+    const graph: DependencyGraph = new Map();
+    for (const task of this.tasks.values()) graph.set(task.id, new Set());
+
+    for (const task of this.tasks.values()) {
+      const dependents = graph.get(task.id)!;
+      for (const dependentId of task.blocks) dependents.add(dependentId);
+      for (const blockerId of task.blockedBy) {
+        const blockerDependents = graph.get(blockerId) ?? new Set<string>();
+        blockerDependents.add(task.id);
+        graph.set(blockerId, blockerDependents);
+      }
+    }
+    return graph;
+  }
+
+  private cloneDependencyGraph(graph: DependencyGraph): DependencyGraph {
+    return new Map(Array.from(graph, ([taskId, dependents]) => [taskId, new Set(dependents)]));
+  }
+
+  private pathExists(graph: DependencyGraph, startId: string, targetId: string): boolean {
+    const pending = [startId];
+    const visited = new Set<string>();
+    while (pending.length > 0) {
+      const current = pending.pop()!;
+      if (current === targetId) return true;
+      if (visited.has(current)) continue;
+      visited.add(current);
+      for (const dependentId of graph.get(current) ?? []) pending.push(dependentId);
+    }
+    return false;
+  }
+
+  private graphReferencesKnownTasks(graph: DependencyGraph): boolean {
+    for (const [blockerId, dependents] of graph) {
+      if (!this.tasks.has(blockerId)) return false;
+      for (const dependentId of dependents) {
+        if (!this.tasks.has(dependentId)) return false;
+      }
+    }
+    return true;
+  }
+
+  private graphIsAcyclic(graph: DependencyGraph): boolean {
+    const visiting = new Set<string>();
+    const visited = new Set<string>();
+    const visit = (taskId: string): boolean => {
+      if (visiting.has(taskId)) return false;
+      if (visited.has(taskId)) return true;
+      visiting.add(taskId);
+      for (const dependentId of graph.get(taskId) ?? []) {
+        if (!visit(dependentId)) return false;
+      }
+      visiting.delete(taskId);
+      visited.add(taskId);
+      return true;
+    };
+
+    return Array.from(graph.keys()).every(visit);
+  }
+
+  /** Return the unique reachability-preserving reduction for a valid dependency DAG. */
+  private normalizedDependencyGraph(graph: DependencyGraph): DependencyGraph | undefined {
+    if (!this.graphReferencesKnownTasks(graph) || !this.graphIsAcyclic(graph)) return undefined;
+
+    const reduced = this.cloneDependencyGraph(graph);
+    const edges = Array.from(graph, ([blockerId, dependents]) =>
+      Array.from(dependents, dependentId => [blockerId, dependentId] as [string, string])
+    ).flat();
+
+    for (const [blockerId, dependentId] of edges) {
+      const dependents = reduced.get(blockerId)!;
+      dependents.delete(dependentId);
+      if (!this.pathExists(reduced, blockerId, dependentId)) dependents.add(dependentId);
+    }
+    return reduced;
+  }
+
+  private applyDependencyGraph(graph: DependencyGraph, updateTimestamps = true): void {
+    const orderedIds = this.orderedTasks().map(task => task.id);
+    const now = Date.now();
+    for (const task of this.tasks.values()) {
+      const nextBlocks = orderedIds.filter(dependentId => graph.get(task.id)?.has(dependentId));
+      const nextBlockedBy = orderedIds.filter(blockerId => graph.get(blockerId)?.has(task.id));
+      const changed =
+        task.blocks.length !== nextBlocks.length ||
+        task.blocks.some((taskId, index) => taskId !== nextBlocks[index]) ||
+        task.blockedBy.length !== nextBlockedBy.length ||
+        task.blockedBy.some((taskId, index) => taskId !== nextBlockedBy[index]);
+      if (!changed) continue;
+      task.blocks = nextBlocks;
+      task.blockedBy = nextBlockedBy;
+      if (updateTimestamps) task.updatedAt = now;
+    }
+  }
+
+  /** Validate the complete candidate edge set without mutating stored tasks. */
+  private proposedDependencyGraph(
+    taskId: string,
+    addBlocks: string[] = [],
+    addBlockedBy: string[] = [],
+  ): { graph: DependencyGraph; addedEdges: Array<[string, string]>; normalized: boolean } {
+    const graph = this.dependencyGraph();
+    const proposedEdges: Array<[blockerId: string, dependentId: string]> = [
+      ...addBlocks.map(dependentId => [taskId, dependentId] as [string, string]),
+      ...addBlockedBy.map(blockerId => [blockerId, taskId] as [string, string]),
+    ];
+    const addedEdges: Array<[string, string]> = [];
+
+    for (const [blockerId, dependentId] of proposedEdges) {
+      if (!this.tasks.has(blockerId)) {
+        throw new TaskUpdateError(
+          "missing_dependency",
+          `Cannot add dependency: task #${blockerId} does not exist`,
+          [blockerId],
+        );
+      }
+      if (!this.tasks.has(dependentId)) {
+        throw new TaskUpdateError(
+          "missing_dependency",
+          `Cannot add dependency: task #${dependentId} does not exist`,
+          [dependentId],
+        );
+      }
+      if (blockerId === dependentId) {
+        throw new TaskUpdateError(
+          "self_dependency",
+          `Task #${taskId} cannot depend on itself`,
+          [taskId],
+        );
+      }
+
+      const dependents = graph.get(blockerId)!;
+      if (dependents.has(dependentId)) continue;
+      if (this.pathExists(graph, dependentId, blockerId)) {
+        throw new TaskUpdateError(
+          "dependency_cycle",
+          `Cannot add dependency #${blockerId} -> #${dependentId}: it would create a cycle`,
+          [blockerId, dependentId],
+        );
+      }
+      dependents.add(dependentId);
+      addedEdges.push([blockerId, dependentId]);
+    }
+
+    const normalizedGraph = this.normalizedDependencyGraph(graph);
+    return {
+      graph: normalizedGraph ?? graph,
+      addedEdges,
+      normalized: normalizedGraph !== undefined,
+    };
+  }
+
+  private unfinishedBlockerIds(taskId: string, graph: DependencyGraph): string[] {
+    const blockerIds: string[] = [];
+    for (const [blockerId, dependents] of graph) {
+      if (dependents.has(taskId)) blockerIds.push(blockerId);
+    }
+
+    const order = new Map(this.orderedTasks().map((task, index) => [task.id, index]));
+    return blockerIds
+      .filter(blockerId => this.tasks.get(blockerId)?.status !== "completed")
+      .sort((a, b) => (order.get(a) ?? Number.MAX_SAFE_INTEGER) - (order.get(b) ?? Number.MAX_SAFE_INTEGER));
+  }
+
   update(id: string, fields: {
     status?: TaskStatus | "deleted";
     subject?: string;
@@ -245,6 +429,110 @@ export class TaskStore {
           t.blockedBy = t.blockedBy.filter(bid => bid !== id);
         }
         return { task: undefined, changedFields: ["deleted"], warnings: [] };
+      }
+
+      // Validate the full candidate graph and status invariants before mutating any field.
+      const dependencyUpdate = this.proposedDependencyGraph(id, fields.addBlocks, fields.addBlockedBy);
+      const { graph: dependencyGraph, addedEdges, normalized } = dependencyUpdate;
+      const statusFor = (taskId: string): TaskStatus =>
+        taskId === id && fields.status && fields.status !== "deleted"
+          ? fields.status
+          : (this.tasks.get(taskId)?.status ?? "pending");
+
+      if (fields.status === "in_progress" || fields.status === "completed") {
+        const unfinishedBlockers = this.unfinishedBlockerIds(id, dependencyGraph);
+        if (unfinishedBlockers.length > 0) {
+          const action = fields.status === "completed" ? "complete" : "start";
+          throw new TaskUpdateError(
+            "blocked",
+            `Task #${id} cannot ${action}; blocked by ${unfinishedBlockers.map(blockerId => `#${blockerId}`).join(", ")}. Complete all declared dependencies first.`,
+            unfinishedBlockers,
+          );
+        }
+      }
+
+      for (const [blockerId, dependentId] of addedEdges) {
+        if (!dependencyGraph.get(blockerId)?.has(dependentId)) continue;
+        const dependentStatus = statusFor(dependentId);
+        if (
+          (dependentStatus === "in_progress" || dependentStatus === "completed") &&
+          statusFor(blockerId) !== "completed"
+        ) {
+          throw new TaskUpdateError(
+            "blocked",
+            `Cannot add unfinished blocker #${blockerId} to ${dependentStatus} task #${dependentId}`,
+            [blockerId, dependentId],
+          );
+        }
+      }
+
+      if (task.status === "completed" && fields.status && fields.status !== "completed") {
+        const protectedDependents = Array.from(dependencyGraph.get(id) ?? [])
+          .filter(dependentId => {
+            const dependentStatus = statusFor(dependentId);
+            return dependentStatus === "in_progress" || dependentStatus === "completed";
+          });
+        if (protectedDependents.length > 0) {
+          throw new TaskUpdateError(
+            "invalid_status",
+            `Cannot reopen completed task #${id}; active or completed dependents require it: ${protectedDependents.map(dependentId => `#${dependentId}`).join(", ")}`,
+            [id, ...protectedDependents],
+          );
+        }
+      }
+
+      const effectiveOwner = fields.owner ?? task.owner;
+      if (
+        task.status === "in_progress" &&
+        task.owner &&
+        fields.owner !== undefined &&
+        fields.owner !== task.owner
+      ) {
+        throw new TaskUpdateError(
+          "owner_busy",
+          `Owner ${task.owner} must finish or undo task #${id} before changing its owner`,
+          [id],
+        );
+      }
+
+      const isClaimingActiveTask =
+        fields.status === "in_progress" ||
+        (task.status === "in_progress" && fields.owner !== undefined && fields.owner !== task.owner);
+      if (isClaimingActiveTask && effectiveOwner) {
+        const otherOwnedTask = this.orderedTasks().find(candidate =>
+          candidate.id !== id &&
+          candidate.owner === effectiveOwner &&
+          candidate.status !== "completed"
+        );
+        if (otherOwnedTask) {
+          throw new TaskUpdateError(
+            "owner_busy",
+            `Owner ${effectiveOwner} must finish or undo task #${otherOwnedTask.id} before claiming task #${id}`,
+            [otherOwnedTask.id, id],
+          );
+        }
+      }
+
+      if (fields.status === "in_progress") {
+        const unfinishedEarlierTasks = this.orderedTasks().filter(candidate => {
+          if (candidate.order >= task.order || candidate.status === "completed") return false;
+          if (this.pathExists(dependencyGraph, id, candidate.id)) return false;
+          return !(
+            candidate.status === "in_progress" &&
+            candidate.owner &&
+            effectiveOwner &&
+            candidate.owner !== effectiveOwner
+          );
+        });
+        if (unfinishedEarlierTasks.length > 0) {
+          const noun = unfinishedEarlierTasks.length === 1 ? "task" : "tasks";
+          const verb = unfinishedEarlierTasks.length === 1 ? "is" : "are";
+          throw new TaskUpdateError(
+            "blocked",
+            `Task #${id} cannot start before earlier ${noun} ${unfinishedEarlierTasks.map(candidate => `#${candidate.id}`).join(", ")} ${verb} completed or actively owned by another owner`,
+            unfinishedEarlierTasks.map(candidate => candidate.id),
+          );
+        }
       }
 
       if (fields.status !== undefined) {
@@ -280,49 +568,35 @@ export class TaskStore {
         changedFields.push("metadata");
       }
 
-      // Bidirectional dependency edges
-      if (fields.addBlocks && fields.addBlocks.length > 0) {
-        for (const targetId of fields.addBlocks) {
-          if (!task.blocks.includes(targetId)) {
-            task.blocks.push(targetId);
-          }
-          const target = this.tasks.get(targetId);
-          if (target && !target.blockedBy.includes(id)) {
-            target.blockedBy.push(id);
-            target.updatedAt = Date.now();
-          }
-          // Warnings for problematic edges
-          if (targetId === id) {
-            warnings.push(`#${id} blocks itself`);
-          } else if (!target) {
-            warnings.push(`#${targetId} does not exist`);
-          } else if (target.blocks.includes(id)) {
-            warnings.push(`cycle: #${id} and #${targetId} block each other`);
-          }
-        }
-        changedFields.push("blocks");
-      }
+      if (fields.addBlocks && fields.addBlocks.length > 0) changedFields.push("blocks");
+      if (fields.addBlockedBy && fields.addBlockedBy.length > 0) changedFields.push("blockedBy");
 
-      if (fields.addBlockedBy && fields.addBlockedBy.length > 0) {
-        for (const targetId of fields.addBlockedBy) {
-          if (!task.blockedBy.includes(targetId)) {
-            task.blockedBy.push(targetId);
-          }
-          const target = this.tasks.get(targetId);
-          if (target && !target.blocks.includes(id)) {
-            target.blocks.push(id);
-            target.updatedAt = Date.now();
-          }
-          // Warnings for problematic edges
-          if (targetId === id) {
-            warnings.push(`#${id} blocks itself`);
-          } else if (!target) {
-            warnings.push(`#${targetId} does not exist`);
-          } else if (task.blocks.includes(targetId)) {
-            warnings.push(`cycle: #${id} and #${targetId} block each other`);
+      // Valid DAGs are persisted in their minimal bidirectional form. Invalid legacy
+      // graphs remain untouched unless a separately validated edge is added.
+      if (normalized) {
+        this.applyDependencyGraph(dependencyGraph);
+      } else {
+        if (fields.addBlocks && fields.addBlocks.length > 0) {
+          for (const targetId of fields.addBlocks) {
+            if (!task.blocks.includes(targetId)) task.blocks.push(targetId);
+            const target = this.tasks.get(targetId)!;
+            if (!target.blockedBy.includes(id)) {
+              target.blockedBy.push(id);
+              target.updatedAt = Date.now();
+            }
           }
         }
-        changedFields.push("blockedBy");
+
+        if (fields.addBlockedBy && fields.addBlockedBy.length > 0) {
+          for (const blockerId of fields.addBlockedBy) {
+            if (!task.blockedBy.includes(blockerId)) task.blockedBy.push(blockerId);
+            const blocker = this.tasks.get(blockerId)!;
+            if (!blocker.blocks.includes(id)) {
+              blocker.blocks.push(id);
+              blocker.updatedAt = Date.now();
+            }
+          }
+        }
       }
 
       task.updatedAt = Date.now();

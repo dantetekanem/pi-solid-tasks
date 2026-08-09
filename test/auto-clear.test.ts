@@ -57,16 +57,16 @@ describe("auto-clear: on_task_complete mode", () => {
   });
 
   it("does not clear pending or in_progress tasks", () => {
-    store.create("Pending", "Desc");
     store.create("In Progress", "Desc");
+    store.create("Pending", "Desc");
     store.create("Completed", "Desc");
-    store.update("2", { status: "in_progress" });
+    store.update("1", { status: "in_progress" });
     store.update("3", { status: "completed" });
     manager.trackCompletion("3", 1);
 
     manager.onTurnStart(5);
-    expect(store.get("1")).toBeDefined(); // pending — untouched
-    expect(store.get("2")).toBeDefined(); // in_progress — untouched
+    expect(store.get("1")).toBeDefined(); // in_progress — untouched
+    expect(store.get("2")).toBeDefined(); // pending — untouched
     expect(store.get("3")).toBeUndefined(); // completed — cleared
   });
 

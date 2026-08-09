@@ -161,7 +161,7 @@ export class TaskWidget {
     const hiddenAt = this.config.hiddenAt ?? "bottom";
     const visibleInProgress = showAll
       ? inProgress
-      : TRUNCATE_FNS[hiddenAt](inProgress, Math.min(1, limit));
+      : TRUNCATE_FNS[hiddenAt](inProgress, limit);
     const completedLimit = Math.min(
       MAX_VISIBLE_COMPLETED_TASKS,
       Math.max(limit - visibleInProgress.length, 0),

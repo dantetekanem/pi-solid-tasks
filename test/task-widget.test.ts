@@ -122,6 +122,20 @@ describe("TaskWidget", () => {
     expect(blockedLine).toContain("blocked by #1");
   });
 
+  it("shows only immediate blockers when another direct edge is transitively redundant", () => {
+    store.create("Root", "Desc");
+    store.create("Middle", "Desc");
+    store.create("Dependent", "Desc");
+    store.update("2", { addBlockedBy: ["1"] });
+    store.update("3", { addBlockedBy: ["1", "2"] });
+    widget.update();
+
+    const lines = renderWidget(ui.state);
+    const dependentLine = lines.find(line => line.includes("Dependent"));
+    expect(dependentLine).toContain("blocked by #2");
+    expect(dependentLine).not.toContain("#1");
+  });
+
   it("hides completed blockers in blocked-by suffix", () => {
     store.create("Blocker", "Desc");
     store.create("Blocked", "Desc");
@@ -281,17 +295,18 @@ describe("TaskWidget", () => {
     for (let i = 1; i <= 2; i++) store.create(`Working ${i}`, "Desc");
     for (let i = 1; i <= 2; i++) store.create(`Todo ${i}`, "Desc");
     for (let i = 1; i <= 4; i++) store.update(String(i), { status: "completed" });
-    for (let i = 5; i <= 6; i++) store.update(String(i), { status: "in_progress" });
+    for (let i = 5; i <= 6; i++) store.update(String(i), { status: "in_progress", owner: `worker-${i}` });
     widget.update();
 
     const lines = renderWidget(ui.state);
-    // header + overflow line + 2 completed + 1 current + 2 pending = 7 lines
+    // header + overflow line + 2 completed + 2 current + 1 pending = 7 lines
     expect(lines).toHaveLength(7);
     // overflow at top (after header)
-    expect(lines[1]).toContain("3 hidden (2 done, 1 in progress)");
-    // hiddenAt=top keeps the later current task, but still shows only one
-    expect(lines.some(l => l.includes("Working 1"))).toBe(false);
+    expect(lines[1]).toContain("3 hidden (2 done, 1 open)");
+    // All in-progress tasks take priority over pending work.
+    expect(lines.some(l => l.includes("Working 1"))).toBe(true);
     expect(lines.some(l => l.includes("Working 2"))).toBe(true);
+    expect(lines.some(l => l.includes("Todo 1"))).toBe(false);
     expect(lines.some(l => l.includes("Todo 2"))).toBe(true);
     // the newest two completed tasks are visible
     expect(lines.some(l => l.includes("Done 2"))).toBe(false);
@@ -315,22 +330,22 @@ describe("TaskWidget", () => {
   });
 
   it("always groups completed, current, and pending tasks with ID order inside each group", () => {
-    store.create("Pending 1", "Desc");            // #1
+    store.create("Current 1", "Desc");            // #1
     store.create("Completed 2", "Desc");          // #2
     store.create("Pending 3", "Desc");            // #3
-    store.create("Current 4", "Desc");            // #4
+    store.create("Pending 4", "Desc");            // #4
     store.create("Completed 5", "Desc");          // #5
+    store.update("1", { status: "in_progress" });
     store.update("2", { status: "completed" });
-    store.update("4", { status: "in_progress" });
     store.update("5", { status: "completed" });
     widget.update();
 
     const lines = renderWidget(ui.state);
     expect(lines[1]).toContain("#2 Completed 2");
     expect(lines[2]).toContain("#5 Completed 5");
-    expect(lines[3]).toContain("#4 Current 4");
-    expect(lines[4]).toContain("#1 Pending 1");
-    expect(lines[5]).toContain("#3 Pending 3");
+    expect(lines[3]).toContain("#1 Current 1");
+    expect(lines[4]).toContain("#3 Pending 3");
+    expect(lines[5]).toContain("#4 Pending 4");
   });
 
   it("tracks token usage for active tasks", () => {
@@ -378,39 +393,56 @@ describe("TaskWidget", () => {
     expect(lines[1]).toContain("~~#1 Task~~");
   });
 
-  it("shows only one current task when multiple tasks are in progress", () => {
+  it("shows multiple in-progress tasks up to the configured limit", () => {
     store.create("Task A", "Desc", "Processing A");
     store.create("Task B", "Desc", "Processing B");
-    store.update("1", { status: "in_progress" });
-    store.update("2", { status: "in_progress" });
+    store.update("1", { status: "in_progress", owner: "worker-a" });
+    store.update("2", { status: "in_progress", owner: "worker-b" });
     widget.setActiveTask("1", true);
     widget.setActiveTask("2", true);
 
     const lines = renderWidget(ui.state);
-    expect(lines[1]).toContain("Processing A…");
-    expect(lines.some(l => l.includes("Processing B…"))).toBe(false);
-    expect(lines[2]).toContain("1 hidden (1 in progress)");
+    expect(lines).toHaveLength(3);
+    expect(lines.some(l => l.includes("Processing A…"))).toBe(true);
+    expect(lines.some(l => l.includes("Processing B…"))).toBe(true);
+    expect(lines.some(l => l.includes("hidden"))).toBe(false);
+  });
+
+  it("prioritizes in-progress tasks when parallel work exceeds the configured limit", () => {
+    widget = new TaskWidget(store, { maxVisible: 3 });
+    widget.setUICtx(ui.ctx);
+    for (let i = 1; i <= 5; i++) {
+      store.create(`Task ${i}`, "Desc", `Processing ${i}`);
+      store.update(String(i), { status: "in_progress", owner: `worker-${i}` });
+      widget.setActiveTask(String(i), true);
+    }
+
+    const lines = renderWidget(ui.state);
+    expect(lines).toHaveLength(5);
+    expect(lines.some(l => l.includes("Processing 1…"))).toBe(true);
+    expect(lines.some(l => l.includes("Processing 2…"))).toBe(true);
+    expect(lines.some(l => l.includes("Processing 3…"))).toBe(true);
+    expect(lines[4]).toContain("2 hidden (2 in progress)");
   });
 
   it("distributes token usage across all active tasks", () => {
     store.create("Task A", "Desc", "A");
     store.create("Task B", "Desc", "B");
-    store.update("1", { status: "in_progress" });
-    store.update("2", { status: "in_progress" });
+    store.update("1", { status: "in_progress", owner: "worker-a" });
+    store.update("2", { status: "in_progress", owner: "worker-b" });
     widget.setActiveTask("1", true);
     widget.setActiveTask("2", true);
 
     widget.addTokenUsage(100, 50);
 
     let lines = renderWidget(ui.state);
-    expect(lines[1]).toContain("↑ 100");
+    expect(lines.find(l => l.includes("A…"))).toContain("↑ 100");
+    expect(lines.find(l => l.includes("B…"))).toContain("↑ 100");
 
-    // The hidden current task retained its metrics and shows them when it becomes current.
     store.update("1", { status: "completed" });
     widget.update();
     lines = renderWidget(ui.state);
-    expect(lines[2]).toContain("B…");
-    expect(lines[2]).toContain("↑ 100");
+    expect(lines.find(l => l.includes("B…"))).toContain("↑ 100");
   });
 
   it("dispose clears widget and timer", () => {

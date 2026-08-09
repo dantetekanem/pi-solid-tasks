@@ -150,17 +150,61 @@ describe("core task tools", () => {
     expect(guidance).toContain("4–5 items");
     expect(guidance).toContain("exact items");
     expect(guidance).toContain("keep pending follow-up tasks visible");
+    expect(guidance).toContain("ready independent tasks");
+    expect(guidance).toContain("all declared dependencies");
+    expect(guidance).toContain("distinct owner");
+    expect(guidance).not.toContain("exactly the earliest runnable task in_progress");
     expect(guidance).not.toContain("Keep one top-level task in_progress");
   });
 
-  it("enforces task order and clears only fully completed lists", async () => {
+  it("describes ready parallel ownership and all-of dependency semantics", () => {
+    const mock = mockPi();
+    initExtension(mock.pi as any);
+    const descriptions = ["task_list", "task_get", "task_update"]
+      .map(name => mock.tools.get(name).description)
+      .join("\n");
+
+    expect(descriptions).toContain("ready");
+    expect(descriptions).toContain("parallel");
+    expect(descriptions).toContain("all");
+    expect(descriptions).toContain("owner");
+    expect(descriptions).toContain("blockedBy");
+    expect(descriptions).toContain("immediate prerequisites");
+    expect(descriptions).toContain("redundant transitive");
+    expect(descriptions).toContain("earlier");
+    expect(descriptions).toContain("actively owned by another owner");
+  });
+
+  it("requires each owner to finish or undo its current task before moving on", () => {
+    const mock = mockPi();
+    initExtension(mock.pi as any);
+    const taskCreate = mock.tools.get("task_create");
+    const taskUpdate = mock.tools.get("task_update");
+    const guidance = [
+      taskCreate.description,
+      ...taskCreate.promptGuidelines,
+      taskUpdate.description,
+    ].join("\n");
+
+    expect(guidance).toContain("finish or undo");
+    expect(guidance).toContain("before claiming another task");
+    expect(guidance).toContain("undo every change and side effect");
+    expect(guidance).toContain("delete the task");
+    expect(guidance).not.toContain("keep the task as in_progress");
+    expect(guidance).not.toContain("unless it is explicitly handed off");
+    expect(taskUpdate.parameters.properties.status.enum).toEqual(["in_progress", "completed", "deleted"]);
+  });
+
+  it("starts independent tasks concurrently and clears only fully completed lists", async () => {
     const mock = mockPi();
     initExtension(mock.pi as any);
     await mock.executeTool("task_create", { subject: "First", description: "desc" });
     await mock.executeTool("task_create", { subject: "Second", description: "desc" });
 
-    const skipped = await mock.executeTool("task_update", { taskId: "2", status: "in_progress" });
-    expect(skipped.content[0].text).toContain("cannot start while earlier tasks remain unfinished");
+    const first = await mock.executeTool("task_update", { taskId: "1", status: "in_progress", owner: "researcher" });
+    const second = await mock.executeTool("task_update", { taskId: "2", status: "in_progress", owner: "team-lead" });
+    expect(first.content[0].text).toContain("Updated task #1 status, owner");
+    expect(second.content[0].text).toContain("Updated task #2 status, owner");
 
     const unfinished = await mock.executeTool("tasks_done", {});
     expect(unfinished.content[0].text).toContain("unfinished tasks remain");
@@ -168,6 +212,85 @@ describe("core task tools", () => {
     await mock.executeTool("task_update", { taskId: "1", status: "completed" });
     await mock.executeTool("task_update", { taskId: "2", status: "completed" });
     expect((await mock.executeTool("tasks_done", {})).content[0].text).toContain("Cleared 2 completed tasks");
+  });
+
+  it("waits for every prerequisite while unrelated work continues", async () => {
+    const mock = mockPi();
+    initExtension(mock.pi as any);
+    await mock.executeTool("task_create", { subject: "Research A", description: "desc" });
+    await mock.executeTool("task_create", { subject: "Research B", description: "desc" });
+    await mock.executeTool("task_create", { subject: "Unrelated implementation", description: "desc" });
+    await mock.executeTool("task_create", { subject: "Integrate research", description: "desc" });
+    await mock.executeTool("task_update", { taskId: "4", addBlockedBy: ["1", "2"] });
+
+    await mock.executeTool("task_update", { taskId: "1", status: "in_progress", owner: "researcher-a" });
+    await mock.executeTool("task_update", { taskId: "2", status: "in_progress", owner: "researcher-b" });
+    await mock.executeTool("task_update", { taskId: "3", status: "in_progress", owner: "team-lead" });
+
+    const bothOpen = await mock.executeTool("task_update", { taskId: "4", status: "in_progress" });
+    expect(bothOpen.content[0].text).toContain("blocked by #1, #2");
+
+    await mock.executeTool("task_update", { taskId: "1", status: "completed" });
+    const oneOpen = await mock.executeTool("task_update", { taskId: "4", status: "in_progress" });
+    expect(oneOpen.content[0].text).toContain("blocked by #2");
+
+    await mock.executeTool("task_update", { taskId: "2", status: "completed" });
+    const unblocked = await mock.executeTool("task_update", { taskId: "4", status: "in_progress", owner: "integrator" });
+    expect(unblocked.content[0].text).toContain("Updated task #4 status, owner");
+
+    const list = await mock.executeTool("task_list", {});
+    expect(list.content[0].text).toContain("#3 [in_progress] Unrelated implementation (team-lead)");
+    expect(list.content[0].text).toContain("#4 [in_progress] Integrate research (integrator)");
+    expect(list.content[0].text).not.toContain("#4 [in_progress] Integrate research (integrator) [blocked by");
+  });
+
+  it("shows only immediate blockers and enforces the transitive completion chain", async () => {
+    const mock = mockPi();
+    initExtension(mock.pi as any);
+    await mock.executeTool("task_create", { subject: "Unrelated", description: "desc" });
+    await mock.executeTool("task_create", { subject: "Task 2", description: "desc" });
+    await mock.executeTool("task_create", { subject: "Task 3", description: "desc" });
+    await mock.executeTool("task_create", { subject: "Task 4", description: "desc" });
+    await mock.executeTool("task_update", { taskId: "3", addBlockedBy: ["2"] });
+    await mock.executeTool("task_update", { taskId: "4", addBlockedBy: ["2", "3"] });
+
+    const list = await mock.executeTool("task_list", {});
+    const task4Line = list.content[0].text.split("\n").find((line: string) => line.startsWith("#4 "));
+    expect(task4Line).toContain("[blocked by #3]");
+    expect(task4Line).not.toContain("#2");
+
+    const task2 = await mock.executeTool("task_get", { taskId: "2" });
+    const task4 = await mock.executeTool("task_get", { taskId: "4" });
+    expect(task2.content[0].text).toContain("Blocks: #3");
+    expect(task2.content[0].text).not.toContain("#4");
+    expect(task4.content[0].text).toContain("Blocked by: #3");
+    expect(task4.content[0].text).not.toContain("#2");
+
+    await mock.executeTool("task_update", { taskId: "1", status: "in_progress", owner: "unrelated-owner" });
+    const earlyCompletion = await mock.executeTool("task_update", { taskId: "3", status: "completed" });
+    expect(earlyCompletion.content[0].text).toContain("cannot complete; blocked by #2");
+    await mock.executeTool("task_update", { taskId: "2", status: "completed" });
+    await mock.executeTool("task_update", { taskId: "3", status: "completed" });
+    const started = await mock.executeTool("task_update", { taskId: "4", status: "in_progress", owner: "integrator" });
+    expect(started.content[0].text).toContain("Updated task #4 status");
+  });
+
+  it("rejects invalid dependency graphs without persisting partial reciprocal edges", async () => {
+    const mock = mockPi();
+    initExtension(mock.pi as any);
+    await mock.executeTool("task_create", { subject: "A", description: "desc" });
+    await mock.executeTool("task_create", { subject: "B", description: "desc" });
+    await mock.executeTool("task_update", { taskId: "1", addBlocks: ["2"] });
+
+    const rejected = await mock.executeTool("task_update", { taskId: "2", addBlocks: ["1"] });
+    expect(rejected.content[0].text).toMatch(/cycle/i);
+
+    const a = await mock.executeTool("task_get", { taskId: "1" });
+    const b = await mock.executeTool("task_get", { taskId: "2" });
+    expect(a.content[0].text).toContain("Blocks: #2");
+    expect(a.content[0].text).not.toContain("Blocked by: #2");
+    expect(b.content[0].text).toContain("Blocked by: #1");
+    expect(b.content[0].text).not.toContain("Blocks: #1");
   });
 
   it("keeps arbitrary metadata without an agent-specific shortcut", async () => {
@@ -229,7 +352,7 @@ describe("core task tools", () => {
     ]);
   });
 
-  it("enforces positioned task order instead of numeric ID order", async () => {
+  it("blocks positioned later work until earlier entries are active under other owners", async () => {
     const mock = mockPi();
     initExtension(mock.pi as any);
     await mock.executeTool("task_create", { subject: "First", description: "desc" });
@@ -239,13 +362,17 @@ describe("core task tools", () => {
       description: "desc",
       position: { type: "before", taskId: "2" },
     });
-    await mock.executeTool("task_update", { taskId: "1", status: "completed" });
 
-    const skipped = await mock.executeTool("task_update", { taskId: "2", status: "in_progress" });
-    expect(skipped.content[0].text).toContain("#3 [pending]");
+    const skipped = await mock.executeTool("task_update", { taskId: "2", status: "in_progress", owner: "later-owner" });
+    expect(skipped.content[0].text).toContain("cannot start before earlier tasks #1, #3");
 
-    const inserted = await mock.executeTool("task_update", { taskId: "3", status: "in_progress" });
-    expect(inserted.content[0].text).toContain("Updated task #3 status");
+    await mock.executeTool("task_update", { taskId: "1", status: "in_progress", owner: "first-owner" });
+    await mock.executeTool("task_update", { taskId: "3", status: "in_progress", owner: "inserted-owner" });
+    const later = await mock.executeTool("task_update", { taskId: "2", status: "in_progress", owner: "later-owner" });
+    expect(later.content[0].text).toContain("Updated task #2 status, owner");
+
+    const list = await mock.executeTool("task_list", {});
+    expect(list.content[0].text.split("\n").map((line: string) => line.match(/#(\d+)/)?.[1])).toEqual(["1", "3", "2"]);
   });
 
   it("rejects missing or completed position anchors without creating a task", async () => {

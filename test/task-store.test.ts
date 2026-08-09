@@ -1,4 +1,4 @@
-import { readFileSync, rmSync } from "node:fs";
+import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -116,11 +116,11 @@ describe("TaskStore (in-memory)", () => {
   });
 
   it("lists tasks sorted by status when sortOrder is 'status'", () => {
-    store.create("Pending", "Desc");           // #1
+    store.create("In progress", "Desc");       // #1
     store.create("Completed", "Desc");         // #2
-    store.create("In progress", "Desc");       // #3
+    store.create("Pending", "Desc");           // #3
+    store.update("1", { status: "in_progress" });
     store.update("2", { status: "completed" });
-    store.update("3", { status: "in_progress" });
 
     const tasks = store.list("status");
     expect(tasks.map(t => t.subject)).toEqual(["Completed", "In progress", "Pending"]);
@@ -292,29 +292,65 @@ describe("TaskStore (in-memory)", () => {
     expect(retrieved.metadata).toEqual({ pr: "123", reviewer: "alice" });
   });
 
-  it("allows circular dependencies with warning", () => {
+  it("rejects direct dependency cycles atomically", () => {
     store.create("A", "Desc");
     store.create("B", "Desc");
     store.update("1", { addBlocks: ["2"] });
-    const { warnings } = store.update("2", { addBlocks: ["1"] });
 
-    expect(store.get("1")!.blocks).toContain("2");
-    expect(store.get("2")!.blocks).toContain("1");
-    expect(warnings).toContain("cycle: #2 and #1 block each other");
+    expect(() => store.update("2", { addBlocks: ["1"] })).toThrow(/cycle/i);
+    expect(store.get("1")!.blocks).toEqual(["2"]);
+    expect(store.get("1")!.blockedBy).toEqual([]);
+    expect(store.get("2")!.blocks).toEqual([]);
+    expect(store.get("2")!.blockedBy).toEqual(["1"]);
   });
 
-  it("allows self-dependency with warning", () => {
+  it("rejects transitive dependency cycles atomically", () => {
+    store.create("A", "Desc");
+    store.create("B", "Desc");
+    store.create("C", "Desc");
+    store.update("1", { addBlocks: ["2"] });
+    store.update("2", { addBlocks: ["3"] });
+    const before = structuredClone(store.list("id"));
+
+    expect(() => store.update("3", {
+      subject: "Must stay C",
+      metadata: { attempted: true },
+      addBlocks: ["1"],
+    })).toThrow(/cycle/i);
+    expect(store.list("id")).toEqual(before);
+  });
+
+  it("rejects self-dependencies through either update direction", () => {
     store.create("Self", "Desc");
-    const { warnings } = store.update("1", { addBlocks: ["1"] });
-    expect(store.get("1")!.blocks).toContain("1");
-    expect(warnings).toContain("#1 blocks itself");
+    const before = structuredClone(store.get("1"));
+
+    expect(() => store.update("1", { addBlocks: ["1"] })).toThrow(/itself/i);
+    expect(store.get("1")).toEqual(before);
+    expect(() => store.update("1", { addBlockedBy: ["1"] })).toThrow(/itself/i);
+    expect(store.get("1")).toEqual(before);
   });
 
-  it("stores dangling edge IDs with warning", () => {
-    store.create("Real", "Desc");
-    const { warnings } = store.update("1", { addBlocks: ["9999"] });
-    expect(store.get("1")!.blocks).toContain("9999");
-    expect(warnings).toContain("#9999 does not exist");
+  it("rejects a mixed addBlocks batch without partially mutating fields or edges", () => {
+    store.create("A", "Desc", undefined, { original: true });
+    store.create("B", "Desc");
+    const before = structuredClone(store.list("id"));
+
+    expect(() => store.update("1", {
+      subject: "Must stay A",
+      metadata: { original: null, attempted: true },
+      addBlocks: ["2", "9999"],
+    })).toThrow(/#9999/);
+    expect(store.list("id")).toEqual(before);
+  });
+
+  it("rejects a mixed addBlockedBy batch without partial reciprocal edges", () => {
+    store.create("A", "Desc");
+    store.create("B", "Desc");
+    store.create("Dependent", "Desc");
+    const before = structuredClone(store.list("id"));
+
+    expect(() => store.update("3", { addBlockedBy: ["1", "9999", "2"] })).toThrow(/#9999/);
+    expect(store.list("id")).toEqual(before);
   });
 
   it("returns no warnings for valid dependencies", () => {
@@ -374,26 +410,193 @@ describe("TaskStore (in-memory)", () => {
     expect(store.get("3")!.blockedBy).toContain("1");
   });
 
-  it("addBlockedBy warns on self-dependency", () => {
-    store.create("Self", "Desc");
-    const { warnings } = store.update("1", { addBlockedBy: ["1"] });
-    expect(store.get("1")!.blockedBy).toContain("1");
-    expect(warnings).toContain("#1 blocks itself");
+  it("allows independent tasks to run concurrently when distinct owners claim them in order", () => {
+    store.create("First", "Desc");
+    store.create("Second", "Desc");
+    store.create("Third", "Desc");
+
+    store.update("1", { status: "in_progress", owner: "worker-a" });
+    store.update("2", { status: "in_progress", owner: "worker-b" });
+    store.update("3", { status: "in_progress", owner: "worker-c" });
+
+    expect(store.list("id").map(task => [task.id, task.status, task.owner])).toEqual([
+      ["1", "in_progress", "worker-a"],
+      ["2", "in_progress", "worker-b"],
+      ["3", "in_progress", "worker-c"],
+    ]);
   });
 
-  it("addBlockedBy warns on dangling ref", () => {
-    store.create("Real", "Desc");
-    const { warnings } = store.update("1", { addBlockedBy: ["9999"] });
-    expect(store.get("1")!.blockedBy).toContain("9999");
-    expect(warnings).toContain("#9999 does not exist");
+  it("does not jump past earlier pending work", () => {
+    store.create("Earlier", "Desc");
+    store.create("Later", "Desc");
+    const before = structuredClone(store.get("2"));
+
+    expect(() => store.update("2", { status: "in_progress", owner: "team-lead" }))
+      .toThrow(/cannot start before earlier task #1/i);
+    expect(store.get("2")).toEqual(before);
   });
 
-  it("addBlockedBy warns on cycle", () => {
-    store.create("A", "Desc");
-    store.create("B", "Desc");
-    store.update("1", { addBlocks: ["2"] });
-    const { warnings } = store.update("1", { addBlockedBy: ["2"] });
-    expect(warnings).toContain("cycle: #1 and #2 block each other");
+  it("allows a later prerequisite to start when earlier work depends on it", () => {
+    store.create("Earlier dependent", "Desc");
+    store.create("Later prerequisite", "Desc");
+    store.update("1", { addBlockedBy: ["2"] });
+
+    store.update("2", { status: "in_progress", owner: "team-lead" });
+
+    expect(store.get("2")!.status).toBe("in_progress");
+  });
+
+  it("prevents one owner from abandoning open work to start another task", () => {
+    store.create("Current", "Desc");
+    store.create("Next", "Desc");
+    store.update("1", { status: "in_progress", owner: "team-lead" });
+    const before = structuredClone(store.get("2"));
+
+    expect(() => store.update("2", { status: "in_progress", owner: "team-lead" }))
+      .toThrow(/finish or undo task #1 before claiming task #2/i);
+    expect(store.get("2")).toEqual(before);
+
+    store.update("2", { status: "in_progress", owner: "reviewer" });
+    expect(store.get("2")!.status).toBe("in_progress");
+  });
+
+  it("does not let an active owner abandon work by clearing or changing ownership", () => {
+    store.create("Current", "Desc");
+    store.update("1", { status: "in_progress", owner: "team-lead" });
+    const before = structuredClone(store.get("1"));
+
+    expect(() => store.update("1", { owner: "" }))
+      .toThrow(/finish or undo task #1 before changing its owner/i);
+    expect(() => store.update("1", { owner: "reviewer" }))
+      .toThrow(/finish or undo task #1 before changing its owner/i);
+    expect(store.get("1")).toEqual(before);
+  });
+
+  it("allows an owner to move on after completing or deleting its current task", () => {
+    store.create("First", "Desc");
+    store.create("Second", "Desc");
+    store.create("Third", "Desc");
+    store.update("1", { status: "in_progress", owner: "team-lead" });
+    store.update("1", { status: "completed" });
+    store.update("2", { status: "in_progress", owner: "team-lead" });
+    store.update("2", { status: "deleted" });
+
+    store.update("3", { status: "in_progress", owner: "team-lead" });
+
+    expect(store.get("3")!.status).toBe("in_progress");
+  });
+
+  it("requires all blockers while unrelated work remains independent", () => {
+    store.create("Blocker A", "Desc");
+    store.create("Blocker B", "Desc");
+    store.create("Unrelated", "Desc");
+    store.create("Dependent", "Desc");
+    store.update("4", { addBlockedBy: ["1", "2"] });
+    store.update("1", { status: "in_progress", owner: "blocker-a" });
+    store.update("2", { status: "in_progress", owner: "blocker-b" });
+    store.update("3", { status: "in_progress", owner: "unrelated" });
+
+    expect(() => store.update("4", { status: "in_progress", owner: "dependent" })).toThrow(/#1, #2/);
+    store.update("1", { status: "completed" });
+    expect(() => store.update("4", { status: "in_progress", owner: "dependent" })).toThrow(/#2/);
+    store.update("2", { status: "completed" });
+
+    store.update("4", { status: "in_progress", owner: "dependent" });
+    expect(store.get("3")!.status).toBe("in_progress");
+    expect(store.get("4")!.status).toBe("in_progress");
+  });
+
+  it("validates status and new blockers together before mutating any field", () => {
+    store.create("Blocker", "Desc");
+    store.create("Dependent", "Desc", undefined, { original: true });
+    const before = structuredClone(store.list("id"));
+
+    expect(() => store.update("2", {
+      status: "in_progress",
+      owner: "worker",
+      metadata: { original: null, attempted: true },
+      addBlockedBy: ["1"],
+    })).toThrow(/blocked by #1/i);
+    expect(store.list("id")).toEqual(before);
+  });
+
+  it("reduces same-call blockers to immediate prerequisites", () => {
+    store.create("Root", "Desc");
+    store.create("Middle", "Desc");
+    store.create("Dependent", "Desc");
+    store.update("2", { addBlockedBy: ["1"] });
+
+    store.update("3", { addBlockedBy: ["1", "2"] });
+
+    expect(store.get("1")!.blocks).toEqual(["2"]);
+    expect(store.get("2")!.blockedBy).toEqual(["1"]);
+    expect(store.get("2")!.blocks).toEqual(["3"]);
+    expect(store.get("3")!.blockedBy).toEqual(["2"]);
+  });
+
+  it("reduces existing redundant edges when a new path makes them transitive", () => {
+    store.create("Root", "Desc");
+    store.create("Middle", "Desc");
+    store.create("Dependent", "Desc");
+    store.update("3", { addBlockedBy: ["1", "2"] });
+    expect(store.get("3")!.blockedBy).toEqual(["1", "2"]);
+
+    store.update("2", { addBlockedBy: ["1"] });
+
+    expect(store.get("1")!.blocks).toEqual(["2"]);
+    expect(store.get("2")!.blocks).toEqual(["3"]);
+    expect(store.get("3")!.blockedBy).toEqual(["2"]);
+  });
+
+  it("does not complete a task while any prerequisite is unfinished", () => {
+    store.create("Blocker", "Desc");
+    store.create("Dependent", "Desc");
+    store.update("2", { addBlockedBy: ["1"] });
+
+    expect(() => store.update("2", { status: "completed" })).toThrow(/cannot complete; blocked by #1/i);
+    expect(store.get("2")!.status).toBe("pending");
+
+    store.update("1", { status: "completed" });
+    store.update("2", { status: "completed" });
+    expect(store.get("2")!.status).toBe("completed");
+  });
+
+  it("rejects unfinished blockers added to active or completed tasks", () => {
+    store.create("Blocker", "Desc");
+    store.create("Active", "Desc");
+    store.create("Completed", "Desc");
+    store.update("1", { status: "in_progress", owner: "blocker" });
+    store.update("2", { status: "in_progress", owner: "active" });
+    store.update("3", { status: "completed" });
+    const before = structuredClone(store.list("id"));
+
+    expect(() => store.update("2", { addBlockedBy: ["1"] })).toThrow(/unfinished blocker #1/i);
+    expect(store.list("id")).toEqual(before);
+    expect(() => store.update("1", { addBlocks: ["3"] })).toThrow(/unfinished blocker #1/i);
+    expect(store.list("id")).toEqual(before);
+  });
+
+  it("rejects reopening a completed blocker with active or completed dependents", () => {
+    store.create("Blocker", "Desc");
+    store.create("Dependent", "Desc");
+    store.update("1", { status: "completed" });
+    store.update("2", { addBlockedBy: ["1"], status: "in_progress" });
+
+    expect(() => store.update("1", { status: "pending" })).toThrow(/cannot reopen completed task #1/i);
+    expect(store.get("1")!.status).toBe("completed");
+
+    store.update("2", { status: "completed" });
+    expect(() => store.update("1", { status: "in_progress" })).toThrow(/cannot reopen completed task #1/i);
+    expect(store.get("1")!.status).toBe("completed");
+  });
+
+  it("still allows a standalone completed task to return to in_progress", () => {
+    store.create("Standalone", "Desc");
+    store.update("1", { status: "completed" });
+
+    store.update("1", { status: "in_progress" });
+
+    expect(store.get("1")!.status).toBe("in_progress");
   });
 
   it("clearCompleted returns 0 when no completed tasks", () => {
@@ -402,17 +605,17 @@ describe("TaskStore (in-memory)", () => {
   });
 
   it("lists open tasks in queue order before completed tasks", () => {
-    store.create("Pending task", "Desc");
-    store.create("Completed task", "Desc");
     store.create("In-progress task", "Desc");
+    store.create("Completed task", "Desc");
+    store.create("Pending task", "Desc");
     store.create("Another pending", "Desc");
 
+    store.update("1", { status: "in_progress" });
     store.update("2", { status: "completed" });
-    store.update("3", { status: "in_progress" });
 
     const tasks = store.list();
     expect(tasks.map(t => t.id)).toEqual(["1", "3", "4", "2"]);
-    expect(tasks.map(t => t.status)).toEqual(["pending", "in_progress", "pending", "completed"]);
+    expect(tasks.map(t => t.status)).toEqual(["in_progress", "pending", "pending", "completed"]);
   });
 });
 
@@ -464,10 +667,10 @@ describe("TaskStore (file-backed)", () => {
 
   it("restores all tasks across instances", () => {
     const store1 = new TaskStore(testListId);
-    store1.create("Pending", "Desc");
     store1.create("In progress", "Desc");
+    store1.create("Pending", "Desc");
     store1.create("Done", "Desc");
-    store1.update("2", { status: "in_progress" });
+    store1.update("1", { status: "in_progress" });
     store1.update("3", { status: "completed" });
 
     const store2 = new TaskStore(testListId);
@@ -496,6 +699,30 @@ describe("TaskStore (file-backed)", () => {
 
     const store2 = new TaskStore(testListId);
     expect(store2.list().map(task => task.subject)).toEqual(["First", "Inserted", "Second"]);
+  });
+
+  it("normalizes a persisted valid graph with redundant reciprocal edges", () => {
+    const original = new TaskStore(testListId);
+    original.create("Root", "Desc");
+    original.create("Middle", "Desc");
+    original.create("Dependent", "Desc");
+    const raw = JSON.parse(readFileSync(filePath, "utf-8"));
+    const [root, middle, dependent] = raw.tasks;
+    root.blocks = ["2", "3"];
+    middle.blockedBy = ["1"];
+    middle.blocks = ["3"];
+    dependent.blockedBy = ["1", "2"];
+    writeFileSync(filePath, JSON.stringify(raw, null, 2));
+
+    const loaded = new TaskStore(testListId);
+    expect(loaded.get("1")!.blocks).toEqual(["2"]);
+    expect(loaded.get("2")!.blocks).toEqual(["3"]);
+    expect(loaded.get("3")!.blockedBy).toEqual(["2"]);
+
+    loaded.update("3", { subject: "Dependent updated" });
+    const persisted = JSON.parse(readFileSync(filePath, "utf-8"));
+    expect(persisted.tasks.find((task: any) => task.id === "1").blocks).toEqual(["2"]);
+    expect(persisted.tasks.find((task: any) => task.id === "3").blockedBy).toEqual(["2"]);
   });
 });
 

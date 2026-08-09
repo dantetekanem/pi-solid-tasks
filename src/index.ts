@@ -28,9 +28,8 @@ import {
   onTurnStart,
   resetCadenceState,
 } from "./reminder-cadence.js";
-import { TaskPositionError, TaskStore } from "./task-store.js";
+import { TaskPositionError, TaskStore, TaskUpdateError } from "./task-store.js";
 import { loadTasksConfig } from "./tasks-config.js";
-import type { Task } from "./types.js";
 import { openSettingsMenu } from "./ui/settings-menu.js";
 import { TaskWidget, type UICtx } from "./ui/task-widget.js";
 
@@ -88,7 +87,7 @@ const REMINDER_INTERVAL = 4;
 /** How many turns completed tasks linger before auto-clearing. */
 const AUTO_CLEAR_DELAY = 4;
 
-const TASK_COMPLETION_CONTRACT = `Treat the active list managed with task_create, task_update, task_list, and tasks_done as a completion contract. Work in dependency and listed task order. Do not start a later task while an earlier task is unfinished. Do not leave the current task to move ahead: either finish it completely with evidence, or keep it in_progress and continue it. When required work is discovered, create or update the task before moving on and place it in the correct dependency order; do not hide it in prose. Mark a task completed only after its full acceptance criteria and verification are satisfied. After every task is completed and verified, delete the completed task records so task_list returns No tasks found.`;
+const TASK_COMPLETION_CONTRACT = `Treat the active list managed with task_create, task_update, task_list, and tasks_done as a completion contract. Work through ready tasks in listed order: all declared blockedBy dependencies must be completed and no other owner may have claimed the task. A later task may start only when every earlier open task is actively in_progress under a different owner or depends on the later task; this prevents skipping while preserving deliberate parallel work. Never duplicate or take over an in_progress task owned by someone else. Before starting dependent work, record every prerequisite with addBlockedBy; only immediate prerequisites are retained because redundant transitive ancestors are removed. Each owner must finish or undo its current task before claiming another task: complete it with evidence, or undo every change and side effect, verify the rollback, and delete the task. Never park owned work in pending or in_progress and never jump to later work; different owners may continue ready independent tasks in parallel. When required work is discovered, create or update the task before moving on; do not hide it in prose. Mark a task completed only after its full acceptance criteria and verification are satisfied. After every task is completed and verified, delete the completed task records so task_list returns No tasks found.`;
 
 const BULK_WORK_DECOMPOSITION_CONTRACT = `Use task_create and task_update to make repeated-item work explicit. When a request contains or a task discovers several independently actionable items that would make one task opaque—always when there are more than five—separate inventory from execution. If the concrete items are not known yet, make the current task an inventory task and discover the full list without changing the items. If the current task was a broad placeholder, first use task_update to rewrite its subject and acceptance criteria around inventory only. Then, before changing any discovered item, create the execution tasks and verify the expanded graph with task_list. Do not perform the discovered bulk execution inside the inventory task. Complete the inventory task only after both the inventory and follow-up graph exist. Prefer one task per item when an item can fail or be verified independently; otherwise create named batches of 4–5 items. Every batch task must list its exact items and focused check. Use a different batch size only when its description records a concrete cohesion, ordering, safety, or verification reason. If the concrete items are already known, create the item or batch tasks before execution instead of creating a redundant inventory task.`;
 
@@ -135,14 +134,6 @@ export default function (pi: ExtensionAPI) {
   let store = new TaskStore(resolveStorePath());
   const tracker = new ProcessTracker();
   const widget = new TaskWidget(store, cfg);
-
-  /** Return earlier listed work that must finish before a task can advance. */
-  function unfinishedEarlierTasks(taskId: string): Task[] {
-    const tasks = store.list();
-    const currentIndex = tasks.findIndex(task => task.id === taskId);
-    if (currentIndex < 0) return [];
-    return tasks.slice(0, currentIndex).filter(task => task.status !== "completed");
-  }
 
   const autoClear = new AutoClearManager(() => store, () => cfg.autoClearCompleted ?? "on_list_complete", AUTO_CLEAR_DELAY);
 
@@ -358,8 +349,9 @@ All tasks are created with status \`pending\`.
       TASK_COMPLETION_CONTRACT,
       BULK_WORK_DECOMPOSITION_CONTRACT,
       "Use task_create to capture every new user requirement or required follow-up before moving on; append it after existing work or connect it with dependencies instead of silently replacing unfinished tasks.",
-      "Use task_update to keep exactly the earliest runnable task in_progress, and keep pending follow-up tasks visible instead of folding their work into the active task.",
-      "Use task_list after each material completion and continue the earliest unfinished task; use tasks_done only after the whole list is verified complete.",
+      "Use task_update to assign each parallel task a distinct owner and mark it in_progress before work begins. Each owner must finish or undo its current task before claiming another; never park owned work while moving ahead; keep pending follow-up tasks visible, and start them in listed order unless earlier work is active under another owner or depends on the later task.",
+      "Use task_update addBlockedBy to record all declared dependencies before starting dependent work; the task remains pending until every blocker completes.",
+      "Use task_list after each material completion and continue the earliest ready task you own; use tasks_done only after the whole list is verified complete.",
     ],
     parameters: Type.Object({
       subject: Type.String({ description: "A brief title for the task" }),
@@ -411,20 +403,24 @@ All tasks are created with status \`pending\`.
 
 ## When to Use This Tool
 
-- To see what tasks are available to work on (status: 'pending', no owner, not blocked)
+- To see the ready set (status: 'pending', no owner, all blockedBy prerequisites completed, and no skipped earlier work)
 - To check overall progress on the project
 - To find tasks that are blocked and need dependencies resolved
-- After completing a task, to check for newly unblocked work or claim the next available task
-- Prefer working in the listed task order; task IDs remain stable references and do not determine position
+- To claim multiple ready independent tasks for parallel work by distinct owners
+- To keep each owner on one task until it is finished or fully undone
+- After completing a task, to find every newly unblocked task
+- Start ready work in listed order; a later task can start only when earlier open work is actively owned by another owner or depends on it
 
 ## Output
 
-Returns open tasks in their configured order, followed by completed tasks. Each summary includes:
+Returns open tasks in their configured order, followed by completed tasks. Several tasks may be in_progress in parallel. Each summary includes:
 - **id**: Stable task identifier (use with task_get, task_update)
 - **subject**: Brief description of the task
 - **status**: 'pending', 'in_progress', or 'completed'
 - **owner**: Owner identifier if assigned, empty if available
-- **blockedBy**: List of open task IDs that must be resolved first (tasks with blockedBy cannot be claimed until dependencies resolve)
+- **blockedBy**: Open immediate prerequisite task IDs; all must be completed before the task is ready
+
+Only immediate prerequisites are retained; redundant transitive blockers already implied by another prerequisite are removed.
 
 Use task_get with a specific task ID to view full details including description and comments.`,
     parameters: Type.Object({}),
@@ -480,11 +476,14 @@ Returns full task details:
 - **description**: Detailed requirements and context
 - **status**: 'pending', 'in_progress', or 'completed'
 - **blocks**: Tasks waiting on this one to complete
-- **blockedBy**: Tasks that must complete before this one can start
+- **blockedBy**: Immediate prerequisite tasks that must complete before this one can start
+
+Redundant transitive blockers are omitted. If #3 depends on #2, a task blocked by both #2 and #3 retains only immediate prerequisite #3.
 
 ## Tips
 
-- After fetching a task, verify its blockedBy list is empty before beginning work.
+- A pending task is ready when every blockedBy prerequisite is completed, no other owner has claimed it, and starting it would not skip earlier open work.
+- Independent tasks may run in parallel when earlier work is active under a distinct owner.
 - Use task_list to see all tasks in summary form.`,
     parameters: Type.Object({
       taskId: Type.String({ description: "The ID of the task to retrieve" }),
@@ -541,18 +540,23 @@ Returns full task details:
 ## When to Use This Tool
 
 **Before starting work on a task:**
-- Mark it in_progress BEFORE beginning — do not start work without updating status first
-- After resolving, call task_list to find your next task
+- Confirm all blockedBy prerequisites are completed; every declared dependency uses all-of semantics
+- Assign a distinct owner and mark the task in_progress BEFORE beginning
+- Multiple ready independent tasks may be in_progress in parallel under distinct owners
+- Before starting later work, every earlier open task must be completed, actively owned by another owner, or depend on the later task
+- After resolving, call task_list to find newly ready work
 
 **Mark tasks as resolved:**
+- A task cannot be completed while any immediate prerequisite is unfinished
 - When you have completed the work described in a task
 - When a task is no longer needed or has been superseded
 - IMPORTANT: Always mark your assigned tasks as resolved when you finish them
 - After resolving, call task_list to find your next task
 
 - ONLY mark a task as completed when you have FULLY accomplished it
-- If you encounter errors, blockers, or cannot finish, keep the task as in_progress
-- When blocked, create a new task describing what needs to be resolved
+- An owner must finish or undo its current task before claiming another task
+- If you cannot finish, do not park the task or jump ahead: undo every change and side effect, verify the rollback, then delete the task
+- Deleting the task record without reversing its work is not an undo
 - Never mark a task as completed if:
   - Tests are failing
   - Implementation is partial
@@ -561,6 +565,7 @@ Returns full task details:
 
 **Delete tasks:**
 - When a task is no longer relevant or was created in error
+- To close unfinished work only after undoing every change and side effect and verifying the rollback
 - Setting status to \`deleted\` permanently removes the task
 
 **Update task details:**
@@ -573,16 +578,16 @@ Returns full task details:
 - **subject**: Change the task title (imperative form, e.g., "Run tests")
 - **description**: Change the task description
 - **activeForm**: Present continuous form shown in spinner when in_progress (e.g., "Running tests")
-- **owner**: Change the task owner or assignee
+- **owner**: Claim a task before work starts; an active owner cannot be cleared or changed
 - **metadata**: Merge metadata keys into the task (set a key to null to delete it)
 - **addBlocks**: Mark tasks that cannot start until this one completes
-- **addBlockedBy**: Mark tasks that must complete before this one can start
+- **addBlockedBy**: Mark immediate prerequisites that must complete before this one can start; redundant transitive blockers are removed
 
 ## Status Workflow
 
-Status progresses: \`pending\` → \`in_progress\` → \`completed\`
+Tasks are created as \`pending\`, then progress to \`in_progress\` and \`completed\`.
 
-Use \`deleted\` to permanently remove a task.
+For agent-owned work, \`task_update\` does not return an active task to \`pending\`. After a verified undo, use \`deleted\` to permanently remove the task.
 
 ## Staleness
 
@@ -610,21 +615,21 @@ Claim a task by setting owner:
 {"taskId": "1", "owner": "my-name"}
 \`\`\`
 
-Set up task dependencies:
+Set up one or more task dependencies (all must complete):
 \`\`\`json
-{"taskId": "2", "addBlockedBy": ["1"]}
+{"taskId": "3", "addBlockedBy": ["1", "2"]}
 \`\`\``,
     parameters: Type.Object({
       taskId: Type.String({ description: "The ID of the task to update" }),
-      status: Type.Optional(Type.Unsafe<"pending" | "in_progress" | "completed" | "deleted">({
+      status: Type.Optional(Type.Unsafe<"in_progress" | "completed" | "deleted">({
         type: "string",
-        enum: ["pending", "in_progress", "completed", "deleted"],
+        enum: ["in_progress", "completed", "deleted"],
         description: "New status for the task",
       })),
       subject: Type.Optional(Type.String({ description: "New subject for the task" })),
       description: Type.Optional(Type.String({ description: "New description for the task" })),
       activeForm: Type.Optional(Type.String({ description: "Present continuous form shown in spinner when in_progress" })),
-      owner: Type.Optional(Type.String({ description: "New owner for the task" })),
+      owner: Type.Optional(Type.String({ description: "Owner claiming the task; active ownership cannot be cleared or changed" })),
       metadata: Type.Optional(Type.Record(Type.String(), Type.Any(), { description: "Metadata keys to merge into the task. Set a key to null to delete it." })),
       addBlocks: Type.Optional(Type.Array(Type.String(), { description: "Task IDs that this task blocks" })),
       addBlockedBy: Type.Optional(Type.Array(Type.String(), { description: "Task IDs that block this task" })),
@@ -632,15 +637,14 @@ Set up task dependencies:
 
     execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
       const { taskId, ...fields } = params;
-      if (fields.status === "in_progress") {
-        const earlier = unfinishedEarlierTasks(taskId);
-        if (earlier.length > 0) {
-          return Promise.resolve(textResult(
-            `Task #${taskId} cannot start while earlier tasks remain unfinished: ${earlier.map(task => `#${task.id} [${task.status}]`).join(", ")}. Finish them first.`
-          ));
-        }
+      let update: ReturnType<TaskStore["update"]>;
+      try {
+        update = store.update(taskId, fields);
+      } catch (error) {
+        if (error instanceof TaskUpdateError) return Promise.resolve(textResult(error.message));
+        throw error;
       }
-      const { task, changedFields, warnings } = store.update(taskId, fields);
+      const { task, changedFields, warnings } = update;
 
       if (changedFields.length === 0 && !task) {
         return Promise.resolve(textResult(`Task #${taskId} not found`));
@@ -649,8 +653,6 @@ Set up task dependencies:
       // Update widget active task tracking
       if (fields.status === "in_progress") {
         widget.setActiveTask(taskId);
-        autoClear.resetBatchCountdown();
-      } else if (fields.status === "pending") {
         autoClear.resetBatchCountdown();
       } else if (fields.status === "completed" || fields.status === "deleted") {
         widget.setActiveTask(taskId, false);
@@ -896,12 +898,28 @@ The tool refuses to clear the list while any task is pending or in_progress.`,
         const action = await ui.select(title, actions);
 
         if (action === "▸ Start (in_progress)") {
-          store.update(taskId, { status: "in_progress" });
+          try {
+            store.update(taskId, { status: "in_progress" });
+          } catch (error) {
+            if (error instanceof TaskUpdateError) {
+              ui.notify(error.message, "warning");
+              return viewTaskDetail(taskId);
+            }
+            throw error;
+          }
           widget.setActiveTask(taskId);
           widget.update();
           return viewTasks();
         } else if (action === "✓ Complete") {
-          store.update(taskId, { status: "completed" });
+          try {
+            store.update(taskId, { status: "completed" });
+          } catch (error) {
+            if (error instanceof TaskUpdateError) {
+              ui.notify(error.message, "warning");
+              return viewTaskDetail(taskId);
+            }
+            throw error;
+          }
           autoClear.trackCompletion(taskId, cadence.currentTurn);
           widget.setActiveTask(taskId, false);
           widget.update();
