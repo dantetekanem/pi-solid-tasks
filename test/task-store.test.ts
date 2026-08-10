@@ -426,6 +426,25 @@ describe("TaskStore (in-memory)", () => {
     ]);
   });
 
+  it("limits parallel work to four tasks and leaves the next task pending", () => {
+    for (let i = 1; i <= 5; i++) store.create(`Task ${i}`, "Desc");
+    for (let i = 1; i <= 4; i++) {
+      store.update(String(i), { status: "in_progress", owner: `worker-${i}` });
+    }
+    const queuedBefore = structuredClone(store.get("5"));
+
+    expect(() => store.update("5", {
+      status: "in_progress",
+      owner: "worker-5",
+      subject: "Must remain queued",
+    })).toThrow(/at most 4 tasks can be in progress/i);
+    expect(store.get("5")).toEqual(queuedBefore);
+
+    store.update("1", { status: "completed" });
+    store.update("5", { status: "in_progress", owner: "worker-5" });
+    expect(store.get("5")!.status).toBe("in_progress");
+  });
+
   it("does not jump past earlier pending work", () => {
     store.create("Earlier", "Desc");
     store.create("Later", "Desc");

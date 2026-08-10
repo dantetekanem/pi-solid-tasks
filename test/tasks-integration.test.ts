@@ -173,6 +173,7 @@ describe("core task tools", () => {
     expect(descriptions).toContain("redundant transitive");
     expect(descriptions).toContain("earlier");
     expect(descriptions).toContain("actively owned by another owner");
+    expect(descriptions).toContain("At most 4 tasks can be in progress at once");
   });
 
   it("requires each owner to finish or undo its current task before moving on", () => {
@@ -212,6 +213,37 @@ describe("core task tools", () => {
     await mock.executeTool("task_update", { taskId: "1", status: "completed" });
     await mock.executeTool("task_update", { taskId: "2", status: "completed" });
     expect((await mock.executeTool("tasks_done", {})).content[0].text).toContain("Cleared 2 completed tasks");
+  });
+
+  it("keeps a fifth parallel task queued until one of four running tasks finishes", async () => {
+    const mock = mockPi();
+    initExtension(mock.pi as any);
+    for (let i = 1; i <= 5; i++) {
+      await mock.executeTool("task_create", { subject: `Task ${i}`, description: "desc" });
+    }
+    for (let i = 1; i <= 4; i++) {
+      await mock.executeTool("task_update", {
+        taskId: String(i),
+        status: "in_progress",
+        owner: `worker-${i}`,
+      });
+    }
+
+    const queued = await mock.executeTool("task_update", {
+      taskId: "5",
+      status: "in_progress",
+      owner: "worker-5",
+    });
+    expect(queued.content[0].text).toContain("At most 4 tasks can be in progress at once");
+    expect((await mock.executeTool("task_get", { taskId: "5" })).content[0].text).toContain("Status: pending");
+
+    await mock.executeTool("task_update", { taskId: "1", status: "completed" });
+    const started = await mock.executeTool("task_update", {
+      taskId: "5",
+      status: "in_progress",
+      owner: "worker-5",
+    });
+    expect(started.content[0].text).toContain("Updated task #5 status, owner");
   });
 
   it("waits for every prerequisite while unrelated work continues", async () => {

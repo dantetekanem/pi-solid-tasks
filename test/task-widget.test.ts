@@ -231,6 +231,22 @@ describe("TaskWidget", () => {
     expect(lines[6]).toContain("2 hidden (2 open)");
   });
 
+  it("shows the next queued task beside four in-progress tasks", () => {
+    for (let i = 1; i <= 5; i++) store.create(`Task ${i}`, "Desc");
+    for (let i = 1; i <= 4; i++) {
+      store.update(String(i), { status: "in_progress", owner: `worker-${i}` });
+    }
+    widget.update();
+
+    const lines = renderWidget(ui.state);
+    expect(lines).toHaveLength(6);
+    expect(lines[0]).toContain("4 in progress");
+    expect(lines[0]).toContain("1 open");
+    expect(lines[5]).toContain("◻");
+    expect(lines[5]).toContain("#5 Task 5");
+    expect(lines.some(line => line.includes("hidden"))).toBe(false);
+  });
+
   it("uses a second completed slot when unfinished work leaves room", () => {
     for (let i = 1; i <= 5; i++) store.create(`Done ${i}`, "Desc");
     for (let i = 1; i <= 3; i++) store.create(`Future ${i}`, "Desc");
@@ -411,7 +427,7 @@ describe("TaskWidget", () => {
   it("prioritizes in-progress tasks when parallel work exceeds the configured limit", () => {
     widget = new TaskWidget(store, { maxVisible: 3 });
     widget.setUICtx(ui.ctx);
-    for (let i = 1; i <= 5; i++) {
+    for (let i = 1; i <= 4; i++) {
       store.create(`Task ${i}`, "Desc", `Processing ${i}`);
       store.update(String(i), { status: "in_progress", owner: `worker-${i}` });
       widget.setActiveTask(String(i), true);
@@ -422,7 +438,7 @@ describe("TaskWidget", () => {
     expect(lines.some(l => l.includes("Processing 1…"))).toBe(true);
     expect(lines.some(l => l.includes("Processing 2…"))).toBe(true);
     expect(lines.some(l => l.includes("Processing 3…"))).toBe(true);
-    expect(lines[4]).toContain("2 hidden (2 in progress)");
+    expect(lines[4]).toContain("1 hidden (1 in progress)");
   });
 
   it("distributes token usage across all active tasks", () => {

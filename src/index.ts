@@ -28,7 +28,7 @@ import {
   onTurnStart,
   resetCadenceState,
 } from "./reminder-cadence.js";
-import { TaskPositionError, TaskStore, TaskUpdateError } from "./task-store.js";
+import { MAX_PARALLEL_RUNNING_TASKS, TaskPositionError, TaskStore, TaskUpdateError } from "./task-store.js";
 import { loadTasksConfig } from "./tasks-config.js";
 import { openSettingsMenu } from "./ui/settings-menu.js";
 import { TaskWidget, type UICtx } from "./ui/task-widget.js";
@@ -87,7 +87,7 @@ const REMINDER_INTERVAL = 4;
 /** How many turns completed tasks linger before auto-clearing. */
 const AUTO_CLEAR_DELAY = 4;
 
-const TASK_COMPLETION_CONTRACT = `Treat the active list managed with task_create, task_update, task_list, and tasks_done as a completion contract. Work through ready tasks in listed order: all declared blockedBy dependencies must be completed and no other owner may have claimed the task. A later task may start only when every earlier open task is actively in_progress under a different owner or depends on the later task; this prevents skipping while preserving deliberate parallel work. Never duplicate or take over an in_progress task owned by someone else. Before starting dependent work, record every prerequisite with addBlockedBy; only immediate prerequisites are retained because redundant transitive ancestors are removed. Each owner must finish or undo its current task before claiming another task: complete it with evidence, or undo every change and side effect, verify the rollback, and delete the task. Never park owned work in pending or in_progress and never jump to later work; different owners may continue ready independent tasks in parallel. When required work is discovered, create or update the task before moving on; do not hide it in prose. Mark a task completed only after its full acceptance criteria and verification are satisfied. After every task is completed and verified, delete the completed task records so task_list returns No tasks found.`;
+const TASK_COMPLETION_CONTRACT = `Treat the active list managed with task_create, task_update, task_list, and tasks_done as a completion contract. Work through ready tasks in listed order: all declared blockedBy dependencies must be completed and no other owner may have claimed the task. A later task may start only when every earlier open task is actively in_progress under a different owner or depends on the later task; this prevents skipping while preserving deliberate parallel work. Never duplicate or take over an in_progress task owned by someone else. Before starting dependent work, record every prerequisite with addBlockedBy; only immediate prerequisites are retained because redundant transitive ancestors are removed. Each owner must finish or undo its current task before claiming another task: complete it with evidence, or undo every change and side effect, verify the rollback, and delete the task. Never park owned work in pending or in_progress and never jump to later work; different owners may continue ready independent tasks in parallel. At most ${MAX_PARALLEL_RUNNING_TASKS} tasks can be in progress at once; keep the next ready task pending in the queue. When required work is discovered, create or update the task before moving on; do not hide it in prose. Mark a task completed only after its full acceptance criteria and verification are satisfied. After every task is completed and verified, delete the completed task records so task_list returns No tasks found.`;
 
 const BULK_WORK_DECOMPOSITION_CONTRACT = `Use task_create and task_update to make repeated-item work explicit. When a request contains or a task discovers several independently actionable items that would make one task opaque—always when there are more than five—separate inventory from execution. If the concrete items are not known yet, make the current task an inventory task and discover the full list without changing the items. If the current task was a broad placeholder, first use task_update to rewrite its subject and acceptance criteria around inventory only. Then, before changing any discovered item, create the execution tasks and verify the expanded graph with task_list. Do not perform the discovered bulk execution inside the inventory task. Complete the inventory task only after both the inventory and follow-up graph exist. Prefer one task per item when an item can fail or be verified independently; otherwise create named batches of 4–5 items. Every batch task must list its exact items and focused check. Use a different batch size only when its description records a concrete cohesion, ordering, safety, or verification reason. If the concrete items are already known, create the item or batch tasks before execution instead of creating a redundant inventory task.`;
 
@@ -406,7 +406,7 @@ All tasks are created with status \`pending\`.
 - To see the ready set (status: 'pending', no owner, all blockedBy prerequisites completed, and no skipped earlier work)
 - To check overall progress on the project
 - To find tasks that are blocked and need dependencies resolved
-- To claim multiple ready independent tasks for parallel work by distinct owners
+- To claim up to ${MAX_PARALLEL_RUNNING_TASKS} ready independent tasks for parallel work by distinct owners
 - To keep each owner on one task until it is finished or fully undone
 - After completing a task, to find every newly unblocked task
 - Start ready work in listed order; a later task can start only when earlier open work is actively owned by another owner or depends on it
@@ -484,6 +484,7 @@ Redundant transitive blockers are omitted. If #3 depends on #2, a task blocked b
 
 - A pending task is ready when every blockedBy prerequisite is completed, no other owner has claimed it, and starting it would not skip earlier open work.
 - Independent tasks may run in parallel when earlier work is active under a distinct owner.
+- At most ${MAX_PARALLEL_RUNNING_TASKS} tasks can be in progress at once; keep the next ready task pending in the queue.
 - Use task_list to see all tasks in summary form.`,
     parameters: Type.Object({
       taskId: Type.String({ description: "The ID of the task to retrieve" }),
@@ -543,6 +544,7 @@ Redundant transitive blockers are omitted. If #3 depends on #2, a task blocked b
 - Confirm all blockedBy prerequisites are completed; every declared dependency uses all-of semantics
 - Assign a distinct owner and mark the task in_progress BEFORE beginning
 - Multiple ready independent tasks may be in_progress in parallel under distinct owners
+- At most ${MAX_PARALLEL_RUNNING_TASKS} tasks can be in progress at once; keep the next ready task pending in the queue
 - Before starting later work, every earlier open task must be completed, actively owned by another owner, or depend on the later task
 - After resolving, call task_list to find newly ready work
 

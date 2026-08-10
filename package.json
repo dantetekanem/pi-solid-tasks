@@ -1,6 +1,6 @@
 {
   "name": "@dantetekanem/pi-tasks",
-  "version": "0.8.0",
+  "version": "0.8.1",
   "private": true,
   "description": "Strict task tracking and coordination for pi.",
   "author": "Leonardo Pereira",

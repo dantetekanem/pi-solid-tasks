@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.8.1
+
+### Changed
+
+- Limit parallel `in_progress` work to four tasks so the default five-task widget keeps the next queued task visible.
+
 ## 0.8.0
 
 ### Added

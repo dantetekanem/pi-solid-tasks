@@ -34,6 +34,7 @@ The agent receives seven tools:
 - A task is ready when all `blockedBy` prerequisites are complete and it has no other owner.
 - Work starts in list order. A later task can start when earlier work is active under another owner or depends on it.
 - Independent tasks can therefore run in parallel without letting one owner skip unfinished work.
+- At most four tasks can be `in_progress` at once, leaving the fifth default widget slot available for the next queued task.
 - Missing dependencies, self-dependencies, and cycles are rejected atomically.
 - Redundant transitive dependencies are removed, leaving only immediate prerequisites.
 - A task cannot start or complete while a prerequisite is unfinished.

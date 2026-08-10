@@ -45,6 +45,7 @@ const SORT_FNS = {
 };
 
 const TASKS_DIR = join(homedir(), ".pi", "tasks");
+export const MAX_PARALLEL_RUNNING_TASKS = 4;
 const LOCK_RETRY_MS = 50;
 const LOCK_MAX_RETRIES = 100; // 5s max
 
@@ -88,7 +89,7 @@ export class TaskPositionError extends Error {
   override name = "TaskPositionError";
 }
 
-export type TaskUpdateErrorCode = "missing_dependency" | "self_dependency" | "dependency_cycle" | "blocked" | "invalid_status" | "owner_busy";
+export type TaskUpdateErrorCode = "missing_dependency" | "self_dependency" | "dependency_cycle" | "blocked" | "invalid_status" | "owner_busy" | "parallel_limit";
 
 export class TaskUpdateError extends Error {
   override name = "TaskUpdateError";
@@ -477,6 +478,19 @@ export class TaskStore {
             "invalid_status",
             `Cannot reopen completed task #${id}; active or completed dependents require it: ${protectedDependents.map(dependentId => `#${dependentId}`).join(", ")}`,
             [id, ...protectedDependents],
+          );
+        }
+      }
+
+      if (fields.status === "in_progress" && task.status !== "in_progress") {
+        const runningTasks = this.orderedTasks().filter(candidate =>
+          candidate.id !== id && candidate.status === "in_progress"
+        );
+        if (runningTasks.length >= MAX_PARALLEL_RUNNING_TASKS) {
+          throw new TaskUpdateError(
+            "parallel_limit",
+            `Task #${id} cannot start. At most ${MAX_PARALLEL_RUNNING_TASKS} tasks can be in progress at once; complete one before starting another.`,
+            [...runningTasks.map(candidate => candidate.id), id],
           );
         }
       }
