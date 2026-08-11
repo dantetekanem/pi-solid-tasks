@@ -176,6 +176,31 @@ describe("core task tools", () => {
     expect(descriptions).toContain("At most 4 tasks can be in progress at once");
   });
 
+  it("keeps outside-milestone findings nonblocking while preserving genuine prerequisites", () => {
+    const mock = mockPi();
+    initExtension(mock.pi as any);
+    const taskCreate = mock.tools.get("task_create");
+    const guidance = [taskCreate.description, ...taskCreate.promptGuidelines].join("\n");
+
+    expect(guidance).toContain("frozen acceptance criteria");
+    expect(guidance).toContain("threat model");
+    expect(guidance).toContain("exercised slice");
+    expect(guidance).toContain("fix a failure in the currently exercised slice");
+    expect(guidance).toContain("genuine prerequisite");
+    expect(guidance).toContain("immediate data loss, privacy/security breach, or irreversibility");
+    expect(guidance).toContain("pending, nonblocking follow-ups");
+    expect(guidance).toContain("append them after current milestone work");
+    expect(guidance).toContain("do not move them ahead");
+    expect(guidance).toContain("or serialize unrelated hardening before a user-visible vertical slice");
+    expect(guidance).toContain("Never use this rule to skip genuinely blocking work");
+    expect(guidance).toContain("append outside-scope follow-ups after existing work");
+    expect(guidance).toContain("only when they are genuine prerequisites");
+    expect(guidance).toContain("all declared blockedBy dependencies must be completed");
+    expect(guidance).toContain("distinct owner");
+    expect(guidance).toContain("finish or undo its current task before claiming another");
+    expect(guidance).toContain("add only immediate prerequisites with addBlockedBy");
+  });
+
   it("requires each owner to finish or undo its current task before moving on", () => {
     const mock = mockPi();
     initExtension(mock.pi as any);
