@@ -163,6 +163,26 @@ describe("TaskWidget", () => {
     expect(lines[0]).toContain("1 open");
   });
 
+  it.each([
+    [12, 6, 1, 50],
+    [3, 1, 1, 33],
+    [3, 2, 0, 67],
+    [2, 0, 1, 0],
+    [2, 2, 0, 100],
+  ])("calculates completion for %i tasks with %i done and %i in progress", (total, done, active, percent) => {
+    for (let i = 1; i <= total; i++) {
+      store.create(`Task ${i}`, "Desc");
+      if (i <= done) store.update(String(i), { status: "completed" });
+      else if (i <= done + active) store.update(String(i), { status: "in_progress" });
+    }
+    widget.update();
+
+    expect(renderWidget(ui.state)[0]).toContain(` - ${percent}%`);
+    if (total === 12) {
+      expect(renderWidget(ui.state)[0]).toContain("12 tasks (6 done, 1 in progress, 5 open) - 50%");
+    }
+  });
+
   it("clears widget when all tasks are deleted", () => {
     store.create("Task", "Desc");
     widget.update();

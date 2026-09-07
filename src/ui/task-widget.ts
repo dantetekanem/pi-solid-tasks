@@ -151,7 +151,8 @@ export class TaskWidget {
     if (completed.length > 0) parts.push(`${completed.length} done`);
     if (inProgress.length > 0) parts.push(`${inProgress.length} in progress`);
     if (pending.length > 0) parts.push(`${pending.length} open`);
-    const statusText = `${tasks.length} tasks (${parts.join(", ")})`;
+    const percentDone = Math.round((completed.length / tasks.length) * 100);
+    const statusText = `${tasks.length} tasks (${parts.join(", ")}) - ${percentDone}%`;
 
     const spinnerChar = SPINNER[this.widgetFrame % SPINNER.length];
     const lines: string[] = [truncate(theme.fg("accent", "●") + " " + theme.fg("accent", statusText))];
