@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.8.3
+
+### Added
+
+- Track top-level tasks with one level of direct subtasks, completed/total progress, percentages, and tree connectors.
+- Retain completed hierarchical task lists until explicitly cleared.
+
+### Changed
+
+- Keep grouping tasks outside execution limits, ownership, and dependency scheduling.
+- Load agent prompts from Markdown files in `prompts/`.
+
 ## 0.8.1
 
 ### Changed

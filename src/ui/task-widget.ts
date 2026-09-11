@@ -9,6 +9,7 @@
  */
 
 import { truncateToWidth } from "@earendil-works/pi-tui";
+import { hasHierarchy, taskProgress, taskTree } from "../task-hierarchy.js";
 import type { TaskStore } from "../task-store.js";
 import type { TasksConfig } from "../tasks-config.js";
 
@@ -137,11 +138,13 @@ export class TaskWidget {
 
   /** Build widget lines from current live state. Called from the render callback. */
   private renderWidget(tui: any, theme: Theme): string[] {
-    const tasks = this.store.list("status");
+    const allTasks = this.store.list("status");
+    const hierarchical = hasHierarchy(allTasks);
+    const tasks = allTasks.filter(task => task.kind !== "group");
     const w = tui.terminal.columns;
     const truncate = (line: string) => truncateToWidth(line, w);
 
-    if (tasks.length === 0) return [];
+    if (allTasks.length === 0) return [];
 
     const completed = tasks.filter(t => t.status === "completed");
     const inProgress = tasks.filter(t => t.status === "in_progress");
@@ -151,8 +154,10 @@ export class TaskWidget {
     if (completed.length > 0) parts.push(`${completed.length} done`);
     if (inProgress.length > 0) parts.push(`${inProgress.length} in progress`);
     if (pending.length > 0) parts.push(`${pending.length} open`);
-    const percentDone = Math.round((completed.length / tasks.length) * 100);
-    const statusText = `${tasks.length} tasks (${parts.join(", ")}) - ${percentDone}%`;
+    const progress = taskProgress(allTasks);
+    const statusText = hierarchical
+      ? `${progress.completed}/${progress.total} subtasks (${parts.join(", ") || "no subtasks"}) - ${progress.percent}%`
+      : `${tasks.length} tasks (${parts.join(", ")}) - ${progress.percent}%`;
 
     const spinnerChar = SPINNER[this.widgetFrame % SPINNER.length];
     const lines: string[] = [truncate(theme.fg("accent", "●") + " " + theme.fg("accent", statusText))];
@@ -173,7 +178,26 @@ export class TaskWidget {
     const visibleIds = new Set(
       [...visibleCompleted, ...visibleInProgress, ...visiblePending].map(task => task.id),
     );
-    const visible = showAll ? tasks : tasks.filter(task => visibleIds.has(task.id));
+    const tree = taskTree([...allTasks].sort((a, b) => a.order - b.order || Number(a.id) - Number(b.id)));
+    const byId = new Map(allTasks.map(task => [task.id, task]));
+    if (hierarchical) {
+      // Context rows do not displace the executable work selected above.
+      for (const id of [...visibleIds]) {
+        let parentId = byId.get(id)?.parentId;
+        const seen = new Set<string>();
+        while (parentId && !seen.has(parentId)) {
+          seen.add(parentId);
+          visibleIds.add(parentId);
+          parentId = byId.get(parentId)?.parentId;
+        }
+      }
+      const roots = allTasks.filter(task => task.kind === "group" && !task.parentId);
+      for (const root of TRUNCATE_FNS[hiddenAt](roots, limit)) visibleIds.add(root.id);
+    }
+    const visible = hierarchical
+      ? tree.filter(({ task }) => showAll || visibleIds.has(task.id)).map(({ task }) => task)
+      : (showAll ? tasks : tasks.filter(task => visibleIds.has(task.id)));
+    const prefixes = new Map(taskTree(visible).map(({ task, prefix }) => [task.id, prefix]));
 
     const hiddenTasks = tasks.filter(task => !visibleIds.has(task.id));
     const hiddenParts: string[] = [];
@@ -183,8 +207,11 @@ export class TaskWidget {
     if (hiddenCompleted > 0) hiddenParts.push(`${hiddenCompleted} done`);
     if (hiddenInProgress > 0) hiddenParts.push(`${hiddenInProgress} in progress`);
     if (hiddenPending > 0) hiddenParts.push(`${hiddenPending} open`);
-    const overflowLine = hiddenTasks.length > 0
-      ? truncate(theme.fg("dim", `    … ${hiddenTasks.length} hidden (${hiddenParts.join(", ")})`))
+    const hiddenGroups = showAll ? 0 : allTasks.filter(task => task.kind === "group" && !visibleIds.has(task.id)).length;
+    if (hiddenGroups > 0) hiddenParts.push(`${hiddenGroups} groups`);
+    const hiddenCount = hiddenTasks.length + hiddenGroups;
+    const overflowLine = hiddenCount > 0
+      ? truncate(theme.fg("dim", `    … ${hiddenCount} hidden (${hiddenParts.join(", ")})`))
       : undefined;
 
     if (overflowLine && hiddenAt === "top") {
@@ -217,7 +244,10 @@ export class TaskWidget {
       }
 
       let text: string;
-      if (isActive) {
+      if (task.kind === "group") {
+        const progress = taskProgress(allTasks, task.id);
+        text = `  ${icon} ${theme.fg("dim", "#" + task.id)} ${theme.bold(`${progress.completed}/${progress.total} · ${progress.percent}%`)} ${task.subject}`;
+      } else if (isActive) {
         const form = task.activeForm || task.subject;
         const m = this.metrics.get(task.id);
         let stats = "";
@@ -237,7 +267,7 @@ export class TaskWidget {
         text = `  ${icon} ${theme.fg("dim", "#" + task.id)} ${task.subject}`;
       }
 
-      lines.push(truncate(text + suffix));
+      lines.push(truncate("  " + (prefixes.get(task.id) ?? "") + text.slice(2) + suffix));
     }
 
     if (overflowLine && hiddenAt !== "top") {

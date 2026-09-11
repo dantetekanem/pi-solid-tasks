@@ -61,6 +61,34 @@ describe("TaskWidget", () => {
     vi.useRealTimers();
   });
 
+  it("shows leaf progress and connectors alongside active direct subtasks", () => {
+    const project = store.create("Project", "Desc", undefined, undefined, undefined, { kind: "group" });
+    const first = store.create("First", "Desc", undefined, undefined, undefined, { parentId: project.id });
+    const second = store.create("Second", "Desc", "Building", undefined, undefined, { parentId: project.id });
+    store.update(first.id, { status: "completed" });
+    store.update(second.id, { status: "in_progress" });
+    widget.setActiveTask(second.id);
+    const lines = renderWidget(ui.state);
+    expect(lines[0]).toContain("1/2 subtasks");
+    expect(lines[0]).toContain("50%");
+    expect(lines.find(line => line.includes("Project"))).toContain("1/2 · 50%");
+    expect(lines.find(line => line.includes("First"))).toContain("├─ ");
+    expect(lines.find(line => line.includes("Building…"))).toContain("└─ ");
+    store.update(second.id, { status: "completed" });
+    widget.update();
+    expect(renderWidget(ui.state)[0]).toContain("2/2 subtasks");
+  });
+
+  it("keeps tree siblings in task order when a later sibling completes", () => {
+    const group = store.create("Project", "Desc", undefined, undefined, undefined, { kind: "group" });
+    const first = store.create("First", "Desc", undefined, undefined, undefined, { parentId: group.id });
+    const second = store.create("Second", "Desc", undefined, undefined, undefined, { parentId: group.id });
+    store.update(second.id, { status: "completed" });
+    widget.update();
+    const lines = renderWidget(ui.state);
+    expect(lines.findIndex(line => line.includes(`#${first.id} `))).toBeLessThan(lines.findIndex(line => line.includes(`#${second.id} `)));
+  });
+
   it("shows nothing when no tasks exist", () => {
     widget.update();
     const entry = ui.state.widgets.get("tasks");

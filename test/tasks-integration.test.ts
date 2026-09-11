@@ -55,7 +55,9 @@ function mockPi() {
       return tool.execute("call-1", params, undefined, undefined, ctx);
     },
     async fireLifecycle(event: string, ...args: any[]) {
-      for (const handler of lifecycleHandlers.get(event) ?? []) await handler(...args);
+      let result: any;
+      for (const handler of lifecycleHandlers.get(event) ?? []) result = await handler(...args);
+      return result;
     },
   };
 }
@@ -124,6 +126,76 @@ describe("/add-task", () => {
     initExtension(mock.pi as any);
     await mock.commands.get("add-task").handler("handle this next", { ...mockCtx(), isIdle: () => false });
     expect(mock.pi.sendUserMessage).toHaveBeenCalledWith(expect.any(String), { deliverAs: "followUp" });
+  });
+});
+
+describe("nested task tools", () => {
+  it("creates groups and subtasks, exposes progress, and clears only on request", async () => {
+    const mock = mockPi();
+    initExtension(mock.pi as any);
+    await mock.executeTool("task_create", { subject: "Project", description: "desc", kind: "group" });
+    const rejected = await mock.executeTool("task_create", { subject: "Subgroup", description: "desc", kind: "group", parentId: "1" });
+    expect(rejected.content[0].text).toContain("one level only");
+    await mock.executeTool("task_create", { subject: "First", description: "desc", parentId: "1" });
+    await mock.executeTool("task_create", { subject: "Second", description: "desc", parentId: "1" });
+    await mock.executeTool("task_update", { taskId: "2", status: "completed" });
+    const list = (await mock.executeTool("task_list", {})).content[0].text;
+    expect(list).toContain("#1 [in_progress] Project [1/2 subtasks · 50%]");
+    expect(list).toContain("├─ #2 [completed] First");
+    expect(list).toContain("└─ #3 [pending] Second");
+    const child = (await mock.executeTool("task_get", { taskId: "3" })).content[0].text;
+    expect(child).toContain("Parent: #1");
+    expect((await mock.executeTool("tasks_done", {})).content[0].text).toContain("unfinished");
+    await mock.executeTool("task_update", { taskId: "3", status: "completed" });
+    for (let i = 0; i < 8; i++) await mock.fireLifecycle("turn_start", {}, mockCtx());
+    await mock.fireLifecycle("before_agent_start", {}, mockCtx());
+    expect((await mock.executeTool("task_get", { taskId: "1" })).content[0].text).toContain("Progress: 2/2 subtasks · 100%");
+    await mock.fireLifecycle("tool_result", { toolName: "read" });
+    // Retained completed projects are history, not unfinished work reminders.
+    expect(await mock.fireLifecycle("context", { messages: [] })).toEqual({});
+    expect((await mock.executeTool("tasks_done", {})).content[0].text).toContain("Cleared 3 completed tasks");
+  });
+
+  it("keeps tree sibling order separate from the execution queue after completion", async () => {
+    const mock = mockPi();
+    initExtension(mock.pi as any);
+    await mock.executeTool("task_create", { subject: "Project", description: "desc", kind: "group" });
+    await mock.executeTool("task_create", { subject: "First", description: "desc", parentId: "1" });
+    await mock.executeTool("task_create", { subject: "Second", description: "desc", parentId: "1" });
+    await mock.executeTool("task_update", { taskId: "2", status: "completed" });
+    const list = (await mock.executeTool("task_list", {})).content[0].text;
+    expect(list.indexOf("#2 [completed]")).toBeLessThan(list.indexOf("#3 [pending]"));
+    expect(list).toContain("Execution queue: #3");
+    const ctx = mockCtx();
+    const select = vi.fn().mockResolvedValueOnce("View all tasks (3)").mockResolvedValue(undefined);
+    await mock.commands.get("tasks").handler("", { ...ctx, ui: { ...ctx.ui, select } });
+    expect(select.mock.calls[1][1].slice(0, 3).map((line: string) => line.match(/#(\d+)/)?.[1])).toEqual(["1", "2", "3"]);
+  });
+
+  it.each(["999", ""])("reports invalid parent %j without adding a task", async (parentId) => {
+    const mock = mockPi();
+    initExtension(mock.pi as any);
+    const result = await mock.executeTool("task_create", { subject: "Child", description: "desc", parentId });
+    expect(result.content[0].text).toMatch(/parent/i);
+    expect((await mock.executeTool("task_list", {})).content[0].text).toBe("No tasks found");
+  });
+
+  it("creates an issue group and child through /tasks", async () => {
+    const mock = mockPi();
+    initExtension(mock.pi as any);
+    const ctx = mockCtx();
+    const select = vi.fn()
+      .mockResolvedValueOnce("Create group")
+      .mockResolvedValueOnce("View all tasks (1)")
+      .mockImplementationOnce((_title, choices) => choices[0])
+      .mockResolvedValueOnce("Add subtask")
+      .mockResolvedValueOnce(undefined);
+    const input = vi.fn()
+      .mockResolvedValueOnce("Project").mockResolvedValueOnce("Acceptance")
+      .mockResolvedValueOnce("Build it").mockResolvedValueOnce("Verified build");
+    await mock.commands.get("tasks").handler("", { ...ctx, ui: { ...ctx.ui, select, input } });
+    expect((await mock.executeTool("task_get", { taskId: "2" })).content[0].text).toContain("Parent: #1");
+    expect((await mock.executeTool("task_get", { taskId: "1" })).content[0].text).toContain("Progress: 0/1 subtasks · 0%");
   });
 });
 

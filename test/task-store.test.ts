@@ -638,6 +638,77 @@ describe("TaskStore (in-memory)", () => {
   });
 });
 
+describe("TaskStore hierarchy", () => {
+  let store: TaskStore;
+
+  beforeEach(() => {
+    store = new TaskStore();
+  });
+
+  it("allows only direct executable subtasks and rejects deeper creation atomically", () => {
+    const group = store.create("Task", "Desc", undefined, undefined, undefined, { kind: "group" });
+    const child = store.create("Subtask", "Desc", undefined, undefined, undefined, { parentId: group.id });
+    const before = structuredClone(store.list());
+    expect(() => store.create("Subgroup", "Desc", undefined, undefined, undefined, { kind: "group", parentId: group.id }))
+      .toThrow(/one level/i);
+    expect(() => store.create("Grandchild", "Desc", undefined, undefined, undefined, { parentId: child.id }))
+      .toThrow(/group/i);
+    expect(store.list()).toEqual(before);
+    expect(store.create("Next", "Desc", undefined, undefined, undefined, { parentId: group.id }).id).toBe("3");
+  });
+
+  it("creates groups and leaf children with derived parent status", () => {
+    const project = store.create("Project", "Desc", undefined, undefined, undefined, { kind: "group" });
+    const first = store.create("First", "Desc", undefined, undefined, undefined, { parentId: project.id });
+    const second = store.create("Second", "Desc", undefined, undefined, undefined, { parentId: project.id });
+
+    expect([project, first, second].map(task => [task.kind, task.parentId])).toEqual([
+      ["group", undefined], [undefined, project.id], [undefined, project.id],
+    ]);
+    store.update(first.id, { status: "completed" });
+    expect(store.get(project.id)!.status).toBe("in_progress");
+    store.update(second.id, { status: "completed" });
+    expect(store.get(project.id)!.status).toBe("completed");
+  });
+
+  it("rejects invalid parents and group execution or dependency mutations atomically", () => {
+    const group = store.create("Group", "Desc", undefined, undefined, undefined, { kind: "group" });
+    const leaf = store.create("Leaf", "Desc", undefined, undefined, undefined, { parentId: group.id });
+    const before = structuredClone(store.list("id"));
+
+    expect(() => store.create("Invalid", "Desc", undefined, undefined, undefined, { parentId: leaf.id }))
+      .toThrow(/parent.*group/i);
+    expect(() => store.update(group.id, { status: "completed" })).toThrow(/group.*derived/i);
+    expect(() => store.update(group.id, { owner: "worker" })).toThrow(/group.*owner/i);
+    expect(() => store.update(group.id, { addBlocks: [leaf.id] })).toThrow(/groups/i);
+    expect(() => store.update(leaf.id, { addBlockedBy: [group.id] })).toThrow(/groups/i);
+    expect(store.list("id")).toEqual(before);
+  });
+
+  it("does not let earlier groups block executable queue work", () => {
+    const group = store.create("Project", "Desc", undefined, undefined, undefined, { kind: "group" });
+    const leaf = store.create("Leaf", "Desc", undefined, undefined, undefined, { parentId: group.id });
+
+    store.update(leaf.id, { status: "in_progress", owner: "worker" });
+    expect(store.get(leaf.id)!.status).toBe("in_progress");
+  });
+
+  it("rejects deleting a parent with children and clears only completed root hierarchies", () => {
+    const project = store.create("Project", "Desc", undefined, undefined, undefined, { kind: "group" });
+    const done = store.create("Done", "Desc", undefined, undefined, undefined, { parentId: project.id });
+    const open = store.create("Open", "Desc", undefined, undefined, undefined, { parentId: project.id });
+    store.update(done.id, { status: "completed" });
+
+    expect(store.delete(project.id)).toBe(false);
+    expect(store.clearCompleted()).toBe(0);
+    expect(store.get(done.id)).toBeDefined();
+
+    store.update(open.id, { status: "completed" });
+    expect(store.clearCompleted()).toBe(3);
+    expect(store.list()).toEqual([]);
+  });
+});
+
 describe("TaskStore (file-backed)", () => {
   const testListId = `test-${Date.now()}-${Math.random().toString(36).slice(2)}`;
   const tasksDir = join(homedir(), ".pi", "tasks");
@@ -669,6 +740,17 @@ describe("TaskStore (file-backed)", () => {
 
     const store2 = new TaskStore(testListId);
     expect(store2.get("1")!.status).toBe("in_progress");
+  });
+
+  it("persists parent links and group kinds across instances", () => {
+    const store1 = new TaskStore(testListId);
+    const project = store1.create("Project", "Desc", undefined, undefined, undefined, { kind: "group" });
+    store1.create("Leaf", "Desc", undefined, undefined, undefined, { parentId: project.id });
+
+    const store2 = new TaskStore(testListId);
+    expect(store2.list("id").map(task => [task.kind, task.parentId])).toEqual([
+      ["group", undefined], [undefined, project.id],
+    ]);
   });
 
   it("persists completed tasks to disk", () => {
