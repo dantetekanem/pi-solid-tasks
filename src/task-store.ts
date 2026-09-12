@@ -8,7 +8,7 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
-import type { Task, TaskCreateOptions, TaskCreatePosition, TaskStatus, TaskStoreData } from "./types.js";
+import type { Task, TaskBatchItem, TaskCreateOptions, TaskCreatePosition, TaskStatus, TaskStoreData } from "./types.js";
 
 function sortById(a: Task, b: Task): number {
   return Number(a.id) - Number(b.id);
@@ -268,6 +268,46 @@ export class TaskStore {
     });
   }
 
+  /** Isolate create/start previews; neither operation mutates nested metadata. */
+  private memorySnapshot(): TaskStore {
+    const snapshot = new TaskStore();
+    snapshot.nextId = this.nextId;
+    snapshot.tasks = new Map(Array.from(this.tasks, ([id, task]) => [id, {
+      ...task, blocks: [...task.blocks], blockedBy: [...task.blockedBy],
+    }]));
+    return snapshot;
+  }
+
+  createInBatch(items: TaskBatchItem[]): Task[] {
+    return this.withLock(() => {
+      if (!Array.isArray(items) || items.length === 0) {
+        throw new TaskUpdateError("invalid_hierarchy", "A batch must contain at least one task");
+      }
+      const staged = this.memorySnapshot(); // After the locked reload, never before it.
+      const created: Task[] = [];
+      const append = (item: TaskBatchItem, path: string, parentId?: string): void => {
+        if (!item || typeof item.subject !== "string" || typeof item.description !== "string" ||
+          (item.activeForm !== undefined && typeof item.activeForm !== "string") ||
+          (item.metadata !== undefined && (!item.metadata || typeof item.metadata !== "object" || Array.isArray(item.metadata))) ||
+          (item.kind !== undefined && item.kind !== "task" && item.kind !== "group") ||
+          (parentId !== undefined && ("kind" in item || "parentId" in item || "children" in item)) ||
+          (item.kind === "group" && item.parentId !== undefined) ||
+          (item.children !== undefined && (item.kind !== "group" || !Array.isArray(item.children)))) {
+          throw new TaskUpdateError("invalid_hierarchy", `Invalid batch item at ${path}: use root groups with one level of executable children`);
+        }
+        const task = staged.create(item.subject, item.description, item.activeForm, item.metadata, undefined, {
+          kind: item.kind, parentId: parentId ?? item.parentId,
+        });
+        created.push(task);
+        for (const [index, child] of (item.children ?? []).entries()) append(child, `${path}.children[${index}]`, task.id);
+      };
+      for (const [index, item] of items.entries()) append(item, `tasks[${index}]`);
+      this.tasks = staged.tasks;
+      this.nextId = staged.nextId;
+      return created;
+    });
+  }
+
   get(id: string): Task | undefined {
     if (this.filePath) this.load();
     this.refreshGroupStatuses();
@@ -279,6 +319,22 @@ export class TaskStore {
     if (this.filePath) this.load();
     this.refreshGroupStatuses();
     return Array.from(this.tasks.values()).sort(SORT_FNS[sortOrder]);
+  }
+
+  /** Advisory selection only: the eventual start still validates the current store. */
+  nextReadyTask(owner?: string): Task | undefined {
+    const tasks = this.list();
+    const preview = this.memorySnapshot();
+    for (const task of tasks) {
+      if (this.isGroup(task) || task.status !== "pending" || (task.owner && task.owner !== owner)) continue;
+      try {
+        preview.update(task.id, { status: "in_progress", owner });
+        return task;
+      } catch (error) {
+        if (!(error instanceof TaskUpdateError)) throw error;
+      }
+    }
+    return undefined;
   }
 
   /** Build the canonical blocker -> dependent graph from both persisted edge directions. */

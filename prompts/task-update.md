@@ -1,4 +1,4 @@
-Use this tool to update a task in the task list.
+Use this tool to start a task, assign an owner, edit details or dependencies, or delete undone work. Prefer task_done for completion: it returns the next ready task in the same response. Updating status to completed here remains supported but does not provide that handoff.
 
 ## When to Use This Tool
 
@@ -8,14 +8,12 @@ Use this tool to update a task in the task list.
 - Multiple ready independent tasks may be in_progress in parallel under distinct owners
 - At most {{maxParallelTasks}} tasks can be in progress at once; keep the next ready task pending in the queue
 - Before starting later work, every earlier open task must be completed, actively owned by another owner, or depend on the later task
-- After resolving, call task_list to find newly ready work
 
-**Mark tasks as resolved:**
+**Complete verified tasks with task_done:**
 - A task cannot be completed while any immediate prerequisite is unfinished
 - When you have completed the work described in a task
-- When a task is no longer needed or has been superseded
 - IMPORTANT: Always mark your assigned tasks as resolved when you finish them
-- After resolving, call task_list to find your next task
+- Continue from task_done's returned next-task context; request a new list only if that context is missing or stale
 
 - ONLY mark a task as completed when you have FULLY accomplished it
 - An owner must finish or undo its current task before claiming another task
@@ -55,7 +53,7 @@ For agent-owned work, `task_update` does not return an active task to `pending`.
 
 ## Staleness
 
-Make sure to read a task's latest state using `task_get` before updating it.
+Use the latest task details already returned by task_done or another task tool. Call task_get only when those details are missing or stale; do not add a routine read before every update.
 
 ## Examples
 
@@ -64,9 +62,9 @@ Mark task as in progress when starting work:
 {"taskId": "1", "status": "in_progress"}
 ```
 
-Mark task as completed after finishing work:
+Complete verified work with the separate task_done tool:
 ```json
-{"taskId": "1", "status": "completed"}
+{"taskId": "1"}
 ```
 
 Delete a task:

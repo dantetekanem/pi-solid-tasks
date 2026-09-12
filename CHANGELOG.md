@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.8.4
+
+### Added
+
+- `tasks_create_in_batch` creates initial plans with one level of group children, rejecting invalid batches without partial changes.
+- `task_done` completes verified tasks and returns full next-ready task context without claiming or starting it.
+
+### Changed
+
+- Prefer batch creation and completion handoffs in agent prompts to avoid redundant `task_list` and `task_get` calls.
+
 ## 0.8.3
 
 ### Added

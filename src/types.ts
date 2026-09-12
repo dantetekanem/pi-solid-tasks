@@ -16,6 +16,17 @@ export interface TaskCreateOptions {
   parentId?: string;
 }
 
+export interface TaskBatchLeaf {
+  subject: string;
+  description: string;
+  activeForm?: string;
+  metadata?: Record<string, any>;
+}
+
+export interface TaskBatchItem extends TaskBatchLeaf, TaskCreateOptions {
+  children?: TaskBatchLeaf[];
+}
+
 export interface Task {
   id: string;
   subject: string;

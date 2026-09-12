@@ -129,6 +129,87 @@ describe("/add-task", () => {
   });
 });
 
+describe("tasks_create_in_batch", () => {
+  it("returns grouped task context and rejects partial plans while preserving single creation IDs", async () => {
+    const mock = mockPi();
+    initExtension(mock.pi as any);
+    const result = await mock.executeTool("tasks_create_in_batch", { tasks: [
+      { kind: "group", subject: "Project", description: "Acceptance", children: [{ subject: "Build", description: "Build evidence" }] },
+      { subject: "Verify", description: "Test evidence" },
+    ] });
+    expect(result.details.tasks.map((task: any) => [task.id, task.parentId])).toEqual([["1", undefined], ["2", "1"], ["3", undefined]]);
+    expect(result.content[0].text).toContain("Build evidence");
+    expect((await mock.executeTool("task_get", { taskId: "2" })).content[0].text).toContain("Parent: #1");
+    await expect(mock.executeTool("tasks_create_in_batch", { tasks: [
+      { subject: "Valid prefix", description: "Desc" },
+      { subject: "Invalid", description: "Desc", children: [] },
+    ] })).rejects.toThrow(/Invalid batch item/);
+    expect((await mock.executeTool("task_list", {})).content[0].text).not.toContain("Valid prefix");
+    expect((await mock.executeTool("task_create", { subject: "Next", description: "Desc" })).content[0].text).toContain("#4");
+  });
+});
+
+describe("task_done handoff", () => {
+  it("completes verified work and returns full next-task context without claiming it", async () => {
+    const mock = mockPi();
+    initExtension(mock.pi as any);
+    await mock.executeTool("tasks_create_in_batch", { tasks: [
+      { kind: "group", subject: "Project", description: "Project acceptance", children: [
+        { subject: "First", description: "Desc" },
+        { subject: "Verify", description: "Run the regression", activeForm: "Verifying", metadata: { path: "test/regression.ts" } },
+      ] },
+    ] });
+    await mock.executeTool("task_update", { taskId: "3", addBlockedBy: ["2"] });
+    await mock.executeTool("task_update", { taskId: "2", status: "in_progress", owner: "team-lead" });
+    const result = await mock.executeTool("task_done", { taskId: "2" });
+    expect(result.details).toMatchObject({ state: "ready", completedTask: { id: "2", status: "completed" }, nextTask: {
+      id: "3", subject: "Verify", description: "Run the regression", parentId: "1", status: "pending", owner: undefined,
+      activeForm: "Verifying", metadata: { path: "test/regression.ts" }, blockedBy: ["2"],
+    } });
+    expect(result.content[0].text).toContain("Run the regression");
+    expect(result.content[0].text).toContain("test/regression.ts");
+    expect((await mock.executeTool("task_get", { taskId: "3" })).content[0].text).toContain("Status: pending");
+    await mock.executeTool("task_update", { taskId: "3", status: "in_progress", owner: "team-lead" });
+    expect((await mock.executeTool("task_done", { taskId: "3" })).details.state).toBe("complete");
+    expect((await mock.executeTool("task_done", { taskId: "3" })).details.state).toBe("complete");
+    for (let i = 0; i < 8; i++) await mock.fireLifecycle("turn_start", {}, mockCtx());
+    expect((await mock.executeTool("task_get", { taskId: "1" })).content[0].text).toContain("Status: completed");
+    expect(mock.pi.sendUserMessage).not.toHaveBeenCalled();
+  });
+
+  it("rejects missing, grouped and blocked completions and reports waiting owners or empty groups", async () => {
+    const mock = mockPi();
+    initExtension(mock.pi as any);
+    await expect(mock.executeTool("task_done", { taskId: "999" })).rejects.toThrow(/not found/);
+    await mock.executeTool("tasks_create_in_batch", { tasks: [
+      { kind: "group", subject: "Project", description: "Desc", children: [
+        { subject: "First", description: "Desc" }, { subject: "Blocked", description: "Desc" },
+      ] },
+    ] });
+    await mock.executeTool("task_update", { taskId: "3", addBlockedBy: ["2"], owner: "other" });
+    await expect(mock.executeTool("task_done", { taskId: "1" })).rejects.toThrow(/derived/);
+    await expect(mock.executeTool("task_done", { taskId: "3" })).rejects.toThrow(/blocked/);
+    expect((await mock.executeTool("task_get", { taskId: "3" })).content[0].text).toContain("Status: pending");
+    const waiting = await mock.executeTool("task_done", { taskId: "2" });
+    expect(waiting.details.state).toBe("waiting");
+    expect(waiting.details.nextTask).toBeUndefined();
+    expect(waiting.content[0].text).toContain("other");
+    await mock.executeTool("task_create", { kind: "group", subject: "Empty", description: "Needs a plan" });
+    const emptyGroup = await mock.executeTool("task_done", { taskId: "3" });
+    expect(emptyGroup.details.state).toBe("waiting");
+    expect(emptyGroup.content[0].text).toContain("Empty");
+  });
+
+  it("keeps the existing flat-list completion countdown", async () => {
+    const mock = mockPi();
+    initExtension(mock.pi as any);
+    await mock.executeTool("task_create", { subject: "Only", description: "Desc" });
+    expect((await mock.executeTool("task_done", { taskId: "1" })).details.state).toBe("complete");
+    for (let i = 0; i < 4; i++) await mock.fireLifecycle("turn_start", {}, mockCtx());
+    expect((await mock.executeTool("task_list", {})).content[0].text).toBe("No tasks found");
+  });
+});
+
 describe("nested task tools", () => {
   it("creates groups and subtasks, exposes progress, and clears only on request", async () => {
     const mock = mockPi();
@@ -200,10 +281,23 @@ describe("nested task tools", () => {
 });
 
 describe("core task tools", () => {
+  it.each(["tasks_create_in_batch", "task_done"])("resets reminder cadence for %s", async (toolName) => {
+    const mock = mockPi();
+    initExtension(mock.pi as any);
+    await mock.executeTool("task_create", { subject: "Open work", description: "Desc" });
+    for (let i = 0; i < 5; i++) await mock.fireLifecycle("turn_start", {}, mockCtx());
+    await mock.fireLifecycle("tool_result", { toolName: "read" });
+    await mock.fireLifecycle("tool_result", { toolName });
+    expect(await mock.fireLifecycle("context", { messages: [] })).toEqual({});
+    for (let i = 0; i < 5; i++) await mock.fireLifecycle("turn_start", {}, mockCtx());
+    await mock.fireLifecycle("tool_result", { toolName: "read" });
+    expect((await mock.fireLifecycle("context", { messages: [] })).messages).toHaveLength(1);
+  });
+
   it("registers tracking and process tools without task_execute", () => {
     const mock = mockPi();
     initExtension(mock.pi as any);
-    for (const name of ["task_create", "task_list", "task_get", "task_update", "tasks_done", "task_output", "task_stop"]) {
+    for (const name of ["task_create", "tasks_create_in_batch", "task_list", "task_get", "task_update", "task_done", "tasks_done", "task_output", "task_stop"]) {
       expect(mock.tools.has(name)).toBe(true);
     }
     expect(mock.tools.has("task_execute")).toBe(false);

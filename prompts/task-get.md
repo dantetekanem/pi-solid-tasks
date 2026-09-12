@@ -2,9 +2,11 @@ Use this tool to retrieve a task by its ID from the task list.
 
 ## When to Use This Tool
 
-- When you need the full description and context before starting work on a task
+- When you need the full description and context and it is not already available in a current task_done handoff or other tool result
 - To understand task dependencies (what it blocks, what blocks it)
-- After being assigned a task, to get complete requirements
+- After being assigned a task, if its complete requirements were not provided
+
+A task_done handoff already contains the next task's full details. Do not fetch them again unless the context is stale or incomplete.
 
 ## Output
 

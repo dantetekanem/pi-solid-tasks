@@ -1,5 +1,4 @@
-Use this tool to create a structured task list for your current coding session. This helps you track progress, organize complex tasks, and demonstrate thoroughness to the user.
-It also helps the user understand the progress of the task and overall progress of their requests.
+Create one structured task or group for the current session. Prefer tasks_create_in_batch for an initial plan with several known tasks or group children. Use task_create for single follow-ups and custom positioning.
 
 ## When to Use This Tool
 
@@ -12,7 +11,7 @@ Use this tool proactively in these scenarios:
 - User provides multiple tasks - When users provide a list of things to be done (numbered or comma-separated)
 - After receiving new instructions - Immediately capture user requirements as tasks
 - When you start working on a task - Mark it as in_progress BEFORE beginning work
-- After completing a task - Mark it as completed and add any new follow-up tasks discovered during implementation
+- After completing a task - Use task_done for verified completion and add any new follow-up tasks discovered during implementation
 
 ## Repeated or Bulk Work
 
@@ -44,4 +43,4 @@ All tasks are created with status `pending`.
 - Create tasks with clear, specific subjects that describe the outcome
 - Include enough detail in the description for another agent to understand and complete the task
 - After creating tasks, use task_update to set up dependencies (blocks/blockedBy) if needed
-- Check task_list first to avoid creating duplicate tasks
+- Check current task context to avoid duplicates; use task_list if the context is missing or stale

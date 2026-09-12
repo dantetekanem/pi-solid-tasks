@@ -3,9 +3,11 @@
  *
  * Tools:
  *   task_create   — Create a structured task
+ *   tasks_create_in_batch — Create an initial plan with optional group children
  *   task_list     — List all tasks with status
  *   task_get      — Get full task details
  *   task_update   — Update task fields, status, dependencies
+ *   task_done     — Complete one task and return the next ready task
  *   tasks_done    — Clear the fully completed task list
  *   task_output   — Get output from a background task process
  *   task_stop     — Stop a running background task process
@@ -62,7 +64,7 @@ function draftTaskKickoffPrompt(taskId: string, rawTask: string): string {
 }
 
 /** Task tool names — used to detect task tool usage for reminder suppression. */
-const TASK_TOOL_NAMES = new Set(["task_create", "task_list", "task_get", "task_update", "tasks_done", "task_output", "task_stop"]);
+const TASK_TOOL_NAMES = new Set(["task_create", "tasks_create_in_batch", "task_list", "task_get", "task_update", "task_done", "tasks_done", "task_output", "task_stop"]);
 
 /** How many turns without task tool usage before injecting a reminder. */
 const REMINDER_INTERVAL = 4;
@@ -329,6 +331,35 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
+  const batchLeafFields = {
+    subject: Type.String({ description: "A brief title for the task" }),
+    description: Type.String({ description: "Requirements and acceptance criteria" }),
+    activeForm: Type.Optional(Type.String()),
+    metadata: Type.Optional(Type.Record(Type.String(), Type.Any())),
+  };
+  pi.registerTool({
+    name: "tasks_create_in_batch",
+    label: "tasks_create_in_batch",
+    description: loadPrompt("tasks-create-in-batch", { bulkWorkDecomposition: BULK_WORK_DECOMPOSITION_CONTRACT }),
+    parameters: Type.Object({
+      tasks: Type.Array(Type.Object({
+        ...batchLeafFields,
+        kind: Type.Optional(Type.Unsafe<"task" | "group">({ type: "string", enum: ["task", "group"] })),
+        parentId: Type.Optional(Type.String({ description: "Existing root group for an executable task" })),
+        children: Type.Optional(Type.Array(Type.Object(batchLeafFields, { additionalProperties: false }))),
+      }, { additionalProperties: false }), { minItems: 1 }),
+    }),
+    async execute(_toolCallId, params) {
+      const tasks = store.createInBatch(params.tasks);
+      autoClear.resetBatchCountdown();
+      widget.update();
+      const text = taskTree(tasks).map(({ task, prefix }) =>
+        `${prefix}#${task.id} [${task.status}] ${task.subject}${task.parentId ? ` (parent #${task.parentId})` : ""}\n${task.description}`
+      ).join("\n");
+      return { ...textResult(text), details: { tasks } };
+    },
+  });
+
   // ──────────────────────────────────────────────────
   // Tool 2: task_list
   // ──────────────────────────────────────────────────
@@ -490,6 +521,32 @@ export default function (pi: ExtensionAPI) {
         msg += ` (warning: ${warnings.join("; ")})`;
       }
       return Promise.resolve(textResult(msg));
+    },
+  });
+
+  pi.registerTool({
+    name: "task_done",
+    label: "task_done",
+    description: loadPrompt("task-done"),
+    parameters: Type.Object({ taskId: Type.String({ description: "ID of the completed and verified task" }) }),
+    async execute(_toolCallId, params) {
+      const { task: completedTask } = store.update(params.taskId, { status: "completed" });
+      if (!completedTask) throw new Error(`Task #${params.taskId} not found`);
+      widget.setActiveTask(params.taskId, false);
+      autoClear.trackCompletion(params.taskId, cadence.currentTurn);
+      widget.update();
+      const nextTask = store.nextReadyTask(completedTask.owner);
+      const unfinished = store.list().filter(task => task.status !== "completed");
+      const state = nextTask ? "ready" : unfinished.length ? "waiting" : "complete";
+      const context = nextTask
+        ? { owner: completedTask.owner, nextTask, parent: nextTask.parentId ? store.get(nextTask.parentId) : undefined }
+        : { unfinished: unfinished.map(({ id, kind, subject, status, owner, blockedBy }) => ({ id, kind, subject, status, owner, blockedBy })) };
+      return {
+        ...textResult(loadPrompt("task-done-handoff", {
+          taskId: completedTask.id, state, context: JSON.stringify(context, null, 2),
+        })),
+        details: { state, completedTask, nextTask },
+      };
     },
   });
 

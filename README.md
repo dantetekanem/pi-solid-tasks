@@ -39,7 +39,17 @@ These checks enforce task state and order. You and the agent still own the quali
 
 ## Projects and subtasks
 
-For larger work, the agent can group tasks under a project or issue:
+For larger work, the agent can create a grouped plan with `tasks_create_in_batch`:
+
+```json
+{"tasks":[{"kind":"group","subject":"Fix login timeouts","description":"Login works with regression coverage","children":[
+  {"subject":"Reproduce the timeout","description":"Capture a failing case"},
+  {"subject":"Fix session handling","description":"Implement the fix"},
+  {"subject":"Verify the fix","description":"Make the regression pass"}
+]}]}
+```
+
+The task list shows progress within each group:
 
 ```text
 Fix login timeouts       2/3 tasks · 67%
@@ -66,12 +76,16 @@ Settings and persisted tasks live under `~/.pi/tasks/` by default. The package n
 
 ## Agent tools
 
+Create a known initial plan with `tasks_create_in_batch`; invalid input creates nothing. Start work with `task_update`. When verified, call `task_done`: it returns the next ready task's details in the same response, without another list/get round trip. The agent still needs to claim and start that task. If nothing is ready, the response reports unfinished work or confirms completion.
+
 | Tool | Purpose |
 | --- | --- |
 | `task_create` | Create a task or group and choose its position |
+| `tasks_create_in_batch` | Create an ordered plan with optional group children |
 | `task_list` | Show tracked work and the execution queue |
 | `task_get` | Read a task, its dependencies, and progress |
 | `task_update` | Update status, ownership, details, or dependencies |
+| `task_done` | Complete one task and return the next ready task |
 | `tasks_done` | Clear a fully completed list |
 | `task_output` | Read tracked background-process output |
 | `task_stop` | Stop a tracked background process |
@@ -81,7 +95,8 @@ Settings and persisted tasks live under `~/.pi/tasks/` by default. The package n
 Agent prompts live in [`prompts/`](prompts/) as Markdown, separate from the implementation:
 
 - `completion-contract.md`, `bulk-work-decomposition.md`, and `task-guidelines.md` define the workflow.
-- `task-create.md`, `task-list.md`, `task-get.md`, `task-update.md`, `tasks-done.md`, `task-output.md`, and `task-stop.md` describe the tools.
+- `task-create.md`, `tasks-create-in-batch.md`, `task-list.md`, `task-get.md`, `task-update.md`, `task-done.md`, `tasks-done.md`, `task-output.md`, and `task-stop.md` describe the tools.
+- `task-done-handoff.md` supplies the completion response and next-step instructions.
 - `system-reminder.md` reminds the agent about unfinished work.
 - `draft-task-description.md` and `draft-task-kickoff.md` handle `/add-task`.
 
