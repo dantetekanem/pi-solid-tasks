@@ -60,7 +60,7 @@ Fix login timeouts       2/3 tasks · 67%
 
 Groups support one level of executable subtasks. Their status and progress come from their children; groups do not need owners or consume parallel-work slots. Progress counts completed subtasks, not estimated effort, so adding work can lower the percentage.
 
-The widget and `/tasks` show the tree. The agent also sees an execution queue: nesting does not change task order. Completed project lists stay visible until you explicitly ask to clear them. Clearing completed work keeps finished subtasks inside an open project.
+The widget and `/tasks` show the tree. The agent also sees an execution queue: nesting does not change task order. Completed groups stay visible while other work remains. Once every task is completed and verified, the agent calls `tasks_done` before its final response unless you ask to keep the records. Clearing completed work keeps finished subtasks inside an open project.
 
 ## Settings and storage
 
@@ -72,11 +72,11 @@ Open `/tasks` → **Settings** to choose storage scope, widget visibility, and a
 | `project` | A persisted list shared across sessions in the same project |
 | `memory` | Temporary, in-memory tasks |
 
-Settings and persisted tasks live under `~/.pi/tasks/` by default. The package name does not change this location. Completed flat lists clear automatically by default; hierarchical lists require explicit cleanup.
+Settings and persisted tasks live under `~/.pi/tasks/` by default. The package name does not change this location. Completed flat lists also clear automatically by default; grouped lists use the agent's final `tasks_done` call.
 
 ## Agent tools
 
-Create a known initial plan with `tasks_create_in_batch`; invalid input creates nothing. Start work with `task_update`. When verified, call `task_done`: it returns the next ready task's details in the same response, without another list/get round trip. The agent still needs to claim and start that task. If nothing is ready, the response reports unfinished work or confirms completion.
+Create a known initial plan with `tasks_create_in_batch`; invalid input creates nothing. Start work with `task_update`. When verified, call `task_done`: it returns the next ready task's details in the same response, without another list/get round trip. The agent still needs to claim and start that task. If nothing is ready, the response reports unfinished work or confirms completion. For a fully verified queue, the final step is `tasks_done`, including for grouped lists, unless you asked to keep the records.
 
 | Tool | Purpose |
 | --- | --- |

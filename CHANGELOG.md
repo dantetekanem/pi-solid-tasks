@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.8.5
+
+### Fixed
+
+- Require `tasks_done` before the final response for fully verified queues, including grouped lists. Retain completed records only when the user explicitly asks to keep them.
+
 ## 0.8.4
 
 ### Added

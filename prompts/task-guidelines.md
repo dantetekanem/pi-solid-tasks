@@ -4,4 +4,4 @@ Use task_update to assign each parallel task a distinct owner and mark it in_pro
 
 Use task_update addBlockedBy to record all declared dependencies before starting dependent work; the task remains pending until every blocker completes.
 
-Use task_done after each verified completion and continue from its next-task context. Use task_list/task_get only when that context is missing or stale, or a broader queue overview is needed; use tasks_done only after the whole list is verified complete. For hierarchical projects, clear only when the user explicitly requests it.
+Use task_done after each verified completion and continue from its next-task context. Use task_list/task_get only when that context is missing or stale, or a broader queue overview is needed. Once the whole list is completed and verified, call tasks_done before the final response, including for grouped lists. Retain records only when the user explicitly asks to keep them.
