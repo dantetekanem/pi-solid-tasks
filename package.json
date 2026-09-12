@@ -1,5 +1,5 @@
 {
-  "name": "@dantetekanem/pi-tasks",
+  "name": "pi-solid-tasks",
   "version": "0.8.3",
   "private": true,
   "description": "Strict task tracking and coordination for pi.",
@@ -7,7 +7,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/dantetekanem/pi-tasks.git"
+    "url": "https://github.com/dantetekanem/pi-solid-tasks.git"
   },
   "keywords": [
     "pi-package",

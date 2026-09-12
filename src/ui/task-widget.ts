@@ -12,20 +12,7 @@ import { truncateToWidth } from "@earendil-works/pi-tui";
 import { hasHierarchy, taskProgress, taskTree } from "../task-hierarchy.js";
 import type { TaskStore } from "../task-store.js";
 import type { TasksConfig } from "../tasks-config.js";
-
-// ---- Truncation ----
-
 import type { Task } from "../types.js";
-
-function truncateFromTop(tasks: Task[], limit: number): Task[] {
-  return limit > 0 ? tasks.slice(-limit) : [];
-}
-
-function truncateFromBottom(tasks: Task[], limit: number): Task[] {
-  return limit > 0 ? tasks.slice(0, limit) : [];
-}
-
-const TRUNCATE_FNS = { top: truncateFromTop, bottom: truncateFromBottom };
 
 // ---- Types ----
 
@@ -47,7 +34,8 @@ export type UICtx = {
 /** Star spinner frames for animated active task indicator (matches Claude Code). */
 const SPINNER = ["✳", "✴", "✵", "✶", "✷", "✸", "✹", "✺", "✻", "✼", "✽"];
 
-const DEFAULT_MAX_VISIBLE_TASKS = 5;
+const MAX_VISIBLE_TASK_ROWS = 5;
+const MAX_VISIBLE_SUBTASKS = 2;
 const MAX_VISIBLE_COMPLETED_TASKS = 2;
 
 /** Per-task runtime metrics (elapsed time, token usage). */
@@ -156,47 +144,41 @@ export class TaskWidget {
     if (pending.length > 0) parts.push(`${pending.length} open`);
     const progress = taskProgress(allTasks);
     const statusText = hierarchical
-      ? `${progress.completed}/${progress.total} subtasks (${parts.join(", ") || "no subtasks"}) - ${progress.percent}%`
+      ? `${progress.completed}/${progress.total} tasks (${parts.join(", ") || "no tasks"}) - ${progress.percent}%`
       : `${tasks.length} tasks (${parts.join(", ")}) - ${progress.percent}%`;
 
     const spinnerChar = SPINNER[this.widgetFrame % SPINNER.length];
     const lines: string[] = [truncate(theme.fg("accent", "●") + " " + theme.fg("accent", statusText))];
 
-    const showAll = this.config.showAll ?? false;
-    const limit = this.config.maxVisible ?? DEFAULT_MAX_VISIBLE_TASKS;
+    const limit = Math.min(this.config.maxVisible ?? MAX_VISIBLE_TASK_ROWS, MAX_VISIBLE_TASK_ROWS);
     const hiddenAt = this.config.hiddenAt ?? "bottom";
-    const visibleInProgress = showAll
-      ? inProgress
-      : TRUNCATE_FNS[hiddenAt](inProgress, limit);
-    const completedLimit = Math.min(
-      MAX_VISIBLE_COMPLETED_TASKS,
-      Math.max(limit - visibleInProgress.length, 0),
-    );
-    const visibleCompleted = showAll ? completed : truncateFromTop(completed, completedLimit);
-    const pendingLimit = Math.max(limit - visibleInProgress.length - visibleCompleted.length, 0);
-    const visiblePending = showAll ? pending : TRUNCATE_FNS[hiddenAt](pending, pendingLimit);
-    const visibleIds = new Set(
-      [...visibleCompleted, ...visibleInProgress, ...visiblePending].map(task => task.id),
-    );
-    const tree = taskTree([...allTasks].sort((a, b) => a.order - b.order || Number(a.id) - Number(b.id)));
+    const fromEdge = (items: Task[]) => hiddenAt === "top" ? [...items].reverse() : items;
     const byId = new Map(allTasks.map(task => [task.id, task]));
-    if (hierarchical) {
-      // Context rows do not displace the executable work selected above.
-      for (const id of [...visibleIds]) {
-        let parentId = byId.get(id)?.parentId;
-        const seen = new Set<string>();
-        while (parentId && !seen.has(parentId)) {
-          seen.add(parentId);
-          visibleIds.add(parentId);
-          parentId = byId.get(parentId)?.parentId;
-        }
+    const candidates = [
+      ...fromEdge(inProgress),
+      ...completed.slice(-MAX_VISIBLE_COMPLETED_TASKS).reverse(),
+      ...fromEdge(pending),
+      ...fromEdge(allTasks.filter(task => task.kind === "group")),
+    ];
+    const visibleIds = new Set<string>();
+    let visibleSubtasks = 0;
+    for (const task of candidates) {
+      if (visibleIds.has(task.id)) continue;
+      const parent = task.parentId ? byId.get(task.parentId) : undefined;
+      if (parent?.status === "completed") continue;
+      const rowCount = 1 + (parent && !visibleIds.has(parent.id) ? 1 : 0);
+      if ((task.parentId && visibleSubtasks >= MAX_VISIBLE_SUBTASKS) || !(visibleIds.size + rowCount <= limit)) {
+        if (parent && task.status === "in_progress" && visibleIds.size < limit) visibleIds.add(parent.id);
+        continue;
       }
-      const roots = allTasks.filter(task => task.kind === "group" && !task.parentId);
-      for (const root of TRUNCATE_FNS[hiddenAt](roots, limit)) visibleIds.add(root.id);
+      if (parent) visibleIds.add(parent.id);
+      visibleIds.add(task.id);
+      if (task.parentId) visibleSubtasks++;
     }
+    const tree = taskTree([...allTasks].sort((a, b) => a.order - b.order || Number(a.id) - Number(b.id)));
     const visible = hierarchical
-      ? tree.filter(({ task }) => showAll || visibleIds.has(task.id)).map(({ task }) => task)
-      : (showAll ? tasks : tasks.filter(task => visibleIds.has(task.id)));
+      ? tree.filter(({ task }) => visibleIds.has(task.id)).map(({ task }) => task)
+      : tasks.filter(task => visibleIds.has(task.id));
     const prefixes = new Map(taskTree(visible).map(({ task, prefix }) => [task.id, prefix]));
 
     const hiddenTasks = tasks.filter(task => !visibleIds.has(task.id));
@@ -207,7 +189,7 @@ export class TaskWidget {
     if (hiddenCompleted > 0) hiddenParts.push(`${hiddenCompleted} done`);
     if (hiddenInProgress > 0) hiddenParts.push(`${hiddenInProgress} in progress`);
     if (hiddenPending > 0) hiddenParts.push(`${hiddenPending} open`);
-    const hiddenGroups = showAll ? 0 : allTasks.filter(task => task.kind === "group" && !visibleIds.has(task.id)).length;
+    const hiddenGroups = allTasks.filter(task => task.kind === "group" && !visibleIds.has(task.id)).length;
     if (hiddenGroups > 0) hiddenParts.push(`${hiddenGroups} groups`);
     const hiddenCount = hiddenTasks.length + hiddenGroups;
     const overflowLine = hiddenCount > 0
@@ -246,7 +228,10 @@ export class TaskWidget {
       let text: string;
       if (task.kind === "group") {
         const progress = taskProgress(allTasks, task.id);
-        text = `  ${icon} ${theme.fg("dim", "#" + task.id)} ${theme.bold(`${progress.completed}/${progress.total} · ${progress.percent}%`)} ${task.subject}`;
+        const summary = `${progress.completed}/${progress.total} · ${progress.percent}%`;
+        text = task.status === "completed"
+          ? `  ${icon} ${theme.fg("dim", `#${task.id} ${summary} ${task.subject}`)}`
+          : `  ${icon} ${theme.fg("dim", "#" + task.id)} ${theme.bold(summary)} ${task.subject}`;
       } else if (isActive) {
         const form = task.activeForm || task.subject;
         const m = this.metrics.get(task.id);

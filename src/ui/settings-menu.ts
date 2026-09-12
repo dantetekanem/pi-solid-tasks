@@ -41,22 +41,13 @@ export async function openSettingsMenu(
         values: ["memory", "session", "project"],
       },
       {
-        id: "showAll",
-        label: "Show all tasks in widget",
-        description:
-          "When ON, every task is shown regardless of the visible limit. " +
-          "When OFF, the list is capped by 'Max visible tasks'.",
-        currentValue: (cfg.showAll ?? false) ? "on" : "off",
-        values: ["on", "off"],
-      },
-      {
         id: "maxVisible",
-        label: "Max visible tasks in widget",
+        label: "Max visible task rows",
         description:
-          "Only applies when 'Show all tasks' is OFF. " +
-          "Caps how many task lines the widget shows.",
-        currentValue: String(cfg.maxVisible ?? 5),
-        values: ["5", "10", "15", "20", "30", "50", "100"],
+          "Includes parent rows, up to five rows total. " +
+          "At most two subtasks are shown across the widget. Use /tasks for the full list.",
+        currentValue: String(Math.min(cfg.maxVisible ?? 5, 5)),
+        values: ["1", "2", "3", "4", "5"],
       },
       {
         id: "hiddenAt",
@@ -91,10 +82,6 @@ export async function openSettingsMenu(
         }
         if (id === "autoClearCompleted") {
           cfg.autoClearCompleted = newValue as TasksConfig["autoClearCompleted"];
-          saveTasksConfig(cfg);
-        }
-        if (id === "showAll") {
-          cfg.showAll = newValue === "on";
           saveTasksConfig(cfg);
         }
         if (id === "maxVisible") {

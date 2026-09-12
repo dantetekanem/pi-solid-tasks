@@ -140,7 +140,7 @@ describe("nested task tools", () => {
     await mock.executeTool("task_create", { subject: "Second", description: "desc", parentId: "1" });
     await mock.executeTool("task_update", { taskId: "2", status: "completed" });
     const list = (await mock.executeTool("task_list", {})).content[0].text;
-    expect(list).toContain("#1 [in_progress] Project [1/2 subtasks · 50%]");
+    expect(list).toContain("#1 [in_progress] Project [1/2 tasks · 50%]");
     expect(list).toContain("├─ #2 [completed] First");
     expect(list).toContain("└─ #3 [pending] Second");
     const child = (await mock.executeTool("task_get", { taskId: "3" })).content[0].text;
@@ -149,7 +149,7 @@ describe("nested task tools", () => {
     await mock.executeTool("task_update", { taskId: "3", status: "completed" });
     for (let i = 0; i < 8; i++) await mock.fireLifecycle("turn_start", {}, mockCtx());
     await mock.fireLifecycle("before_agent_start", {}, mockCtx());
-    expect((await mock.executeTool("task_get", { taskId: "1" })).content[0].text).toContain("Progress: 2/2 subtasks · 100%");
+    expect((await mock.executeTool("task_get", { taskId: "1" })).content[0].text).toContain("Progress: 2/2 tasks · 100%");
     await mock.fireLifecycle("tool_result", { toolName: "read" });
     // Retained completed projects are history, not unfinished work reminders.
     expect(await mock.fireLifecycle("context", { messages: [] })).toEqual({});
@@ -195,7 +195,7 @@ describe("nested task tools", () => {
       .mockResolvedValueOnce("Build it").mockResolvedValueOnce("Verified build");
     await mock.commands.get("tasks").handler("", { ...ctx, ui: { ...ctx.ui, select, input } });
     expect((await mock.executeTool("task_get", { taskId: "2" })).content[0].text).toContain("Parent: #1");
-    expect((await mock.executeTool("task_get", { taskId: "1" })).content[0].text).toContain("Progress: 0/1 subtasks · 0%");
+    expect((await mock.executeTool("task_get", { taskId: "1" })).content[0].text).toContain("Progress: 0/1 tasks · 0%");
   });
 });
 

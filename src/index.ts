@@ -1,5 +1,5 @@
 /**
- * pi-tasks — A pi extension providing strict task tracking and coordination.
+ * pi-solid-tasks — A pi extension providing strict task tracking and coordination.
  *
  * Tools:
  *   task_create   — Create a structured task
@@ -348,7 +348,7 @@ export default function (pi: ExtensionAPI) {
         let line = `${prefix}#${task.id} [${task.status}] ${task.subject}`;
         if (task.kind === "group") {
           const progress = taskProgress(tasks, task.id);
-          line += ` [${progress.completed}/${progress.total} subtasks · ${progress.percent}%]`;
+          line += ` [${progress.completed}/${progress.total} tasks · ${progress.percent}%]`;
         }
 
         if (task.owner) {
@@ -408,7 +408,7 @@ export default function (pi: ExtensionAPI) {
       if (task.kind === "group") {
         const tasks = store.list();
         const progress = taskProgress(tasks, task.id);
-        lines.push(`Progress: ${progress.completed}/${progress.total} subtasks · ${progress.percent}%`);
+        lines.push(`Progress: ${progress.completed}/${progress.total} tasks · ${progress.percent}%`);
         lines.push(`Children: ${tasks.filter(child => child.parentId === task.id).map(child => `#${child.id}`).join(", ") || "none"}`);
         lines.push("Group status follows children; no owner or manual status updates.");
       }
@@ -683,7 +683,7 @@ export default function (pi: ExtensionAPI) {
         const treeTasks = hasHierarchy(tasks) ? [...tasks].sort((a, b) => a.order - b.order || Number(a.id) - Number(b.id)) : tasks;
         const choices = taskTree(treeTasks).map(({ task, prefix }) => {
           const progress = task.kind === "group" ? taskProgress(tasks, task.id) : undefined;
-          const suffix = progress ? ` · ${progress.completed}/${progress.total} subtasks · ${progress.percent}%` : "";
+          const suffix = progress ? ` · ${progress.completed}/${progress.total} tasks · ${progress.percent}%` : "";
           return `${prefix}${statusIcon(task.status)} #${task.id} [${task.status}] ${task.subject}${suffix}`;
         });
         choices.push("← Back");
@@ -714,7 +714,7 @@ export default function (pi: ExtensionAPI) {
         actions.push("← Back");
 
         const progress = task.kind === "group" ? taskProgress(store.list(), task.id) : undefined;
-        const suffix = progress ? `\n${progress.completed}/${progress.total} subtasks · ${progress.percent}%` : "";
+        const suffix = progress ? `\n${progress.completed}/${progress.total} tasks · ${progress.percent}%` : "";
         const title = `#${task.id} [${task.status}] ${task.subject}${suffix}\n${task.description}`;
         const action = await ui.select(title, actions);
 

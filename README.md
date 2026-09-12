@@ -1,75 +1,93 @@
-# pi-tasks
+# pi-solid-tasks
 
-Strict task tracking for [pi](https://pi.dev). It keeps multi-step work explicit, supports dependency-aware parallel work, and refuses to discard unfinished lists.
+Strict task tracking for [Pi](https://pi.dev). Keep unfinished work visible, give tasks clear owners, and check dependencies before moving on. The agent manages the list; you can inspect it at any time.
 
 ## Install
 
 ```bash
-pi install git:github.com/dantetekanem/pi-tasks
+pi install git:github.com/dantetekanem/pi-solid-tasks
 ```
 
-Pi extensions run with full system access. Review third-party code before installing it.
+Restart Pi or run `/reload` in an open session. No manual configuration needed.
+
+Keep only one task extension enabled: this package uses the same tool names as `pi-tasks`. Pi extensions run with full system access, so review the code before installing.
 
 ## Use
 
-- `/tasks` opens the task manager and settings.
-- `/add-task <task>` adds a draft for the agent to refine and complete.
+Ask Pi to work on something. For multi-step work, the agent creates tasks, tracks progress, and checks the results before marking them complete.
 
-The agent receives seven tools:
+- `/tasks` opens the task list, manual controls, and settings.
+- `/add-task <task>` adds a draft for the agent to turn into a clear task and carry out.
 
-| Tool | Action |
+```text
+/add-task Fix the login timeout and cover it with a regression test
+```
+
+The widget shows up to five task rows, including parents, with at most two subtask rows across the whole widget. Completed groups collapse to one dimmed parent row. Hidden work still counts toward progress. Open `/tasks` for the full list.
+
+## What makes the tasks solid
+
+- Tasks move through `pending`, `in_progress`, and `completed`.
+- An owner must finish its current task, or undo the work and delete the task, before claiming another. Unfinished work cannot be parked to skip ahead.
+- Dependencies must all be complete before a task can start or finish. Missing dependencies, self-dependencies, and cycles are rejected without partially changing the list.
+- Work follows list order. Later tasks can start when earlier work belongs to another active owner or depends on the later task.
+- Up to four independent tasks can run in parallel, each with a different owner.
+- Only immediate prerequisites are kept; redundant transitive dependencies are removed.
+- `tasks_done` refuses to clear a list while anything remains unfinished.
+
+These checks enforce task state and order. You and the agent still own the quality of the work and its verification.
+
+## Projects and subtasks
+
+For larger work, the agent can group tasks under a project or issue:
+
+```text
+Fix login timeouts       2/3 tasks · 67%
+├─ Reproduce the timeout completed
+├─ Fix session handling completed
+└─ Verify the fix        pending
+```
+
+Groups support one level of executable subtasks. Their status and progress come from their children; groups do not need owners or consume parallel-work slots. Progress counts completed subtasks, not estimated effort, so adding work can lower the percentage.
+
+The widget and `/tasks` show the tree. The agent also sees an execution queue: nesting does not change task order. Completed project lists stay visible until you explicitly ask to clear them. Clearing completed work keeps finished subtasks inside an open project.
+
+## Settings and storage
+
+Open `/tasks` → **Settings** to choose storage scope, widget visibility, and automatic cleanup.
+
+| Scope | Storage |
 | --- | --- |
-| `task_create` | Create and position a task |
-| `task_list` | List tracked work |
-| `task_get` | Read one task |
-| `task_update` | Update status, ownership, metadata, or dependencies |
+| `session` (default) | A separate persisted list for each Pi session |
+| `project` | A persisted list shared across sessions in the same project |
+| `memory` | Temporary, in-memory tasks |
+
+Settings and persisted tasks live under `~/.pi/tasks/` by default. The package name does not change this location. Completed flat lists clear automatically by default; hierarchical lists require explicit cleanup.
+
+## Agent tools
+
+| Tool | Purpose |
+| --- | --- |
+| `task_create` | Create a task or group and choose its position |
+| `task_list` | Show tracked work and the execution queue |
+| `task_get` | Read a task, its dependencies, and progress |
+| `task_update` | Update status, ownership, details, or dependencies |
 | `tasks_done` | Clear a fully completed list |
 | `task_output` | Read tracked background-process output |
 | `task_stop` | Stop a tracked background process |
 
-## Task model
+## Prompts
 
-- Tasks move from `pending` to `in_progress` to `completed`.
-- An owner must finish its current task, or undo its work and delete it, before claiming another.
-- A task is ready when all `blockedBy` prerequisites are complete and it has no other owner.
-- Work starts in list order. A later task can start when earlier work is active under another owner or depends on it.
-- Independent tasks can therefore run in parallel without letting one owner skip unfinished work.
-- At most four tasks can be `in_progress` at once, leaving the fifth default widget slot available for the next queued task.
-- Missing dependencies, self-dependencies, and cycles are rejected atomically.
-- Redundant transitive dependencies are removed, leaving only immediate prerequisites.
-- A task cannot start or complete while a prerequisite is unfinished.
-- `tasks_done` refuses cleanup while any task remains open.
+Agent prompts live in [`prompts/`](prompts/) as Markdown, separate from the implementation:
 
-For example, tasks `#1` and `#2` can run together while task `#3`, with `blockedBy: ["1", "2"]`, waits for both.
+- `completion-contract.md`, `bulk-work-decomposition.md`, and `task-guidelines.md` define the workflow.
+- `task-create.md`, `task-list.md`, `task-get.md`, `task-update.md`, `tasks-done.md`, `task-output.md`, and `task-stop.md` describe the tools.
+- `system-reminder.md` reminds the agent about unfinished work.
+- `draft-task-description.md` and `draft-task-kickoff.md` handle `/add-task`.
 
-## Projects and subtasks (prototype)
+[`src/prompts.ts`](src/prompts.ts) loads these files relative to the package and fills `{{name}}` placeholders. Blank lines separate entries in `task-guidelines.md`. Keep new agent instructions in `prompts/*.md`; tool schemas, UI labels, and execution logic stay in TypeScript. Run `/reload` after editing prompts.
 
-Describe the goal; the agent creates and maintains the tasks. It uses `task_create` with `kind: "group"` for a top-level task and `parentId` for its direct executable subtasks. There is exactly one subtask level: no nested groups or sub-subtasks. Kind and parent are fixed at creation.
-
-```text
-Build this project       2/3 subtasks · 67%
-├─ Implement login       completed
-├─ Verify login          completed
-└─ Deploy preview        pending
-```
-
-Groups derive their status from their children. Empty groups remain pending; groups complete when all children complete. Only executable tasks have owners and dependencies or consume parallel-work slots. Add a final verification subtask when an issue needs an acceptance check.
-
-Progress counts completed executable subtasks, not groups or estimated effort. Adding discovered work can lower the percentage. `task_list` shows the hierarchy and a separate execution queue; nesting does not reorder that queue. `task_get` shows parent, children and progress.
-
-The widget and `/tasks` show connecting lines between each task and its subtasks. The widget's visible-task limit applies to executable rows; parent summaries add rows. `/tasks` shows all tracked work. Manual creation is optional; the agent manages the structure.
-
-Hierarchical lists stay until explicitly cleared, even when automatic cleanup is enabled. **Clear completed** keeps completed subtasks inside open projects so their progress stays intact. Individual groups with children cannot be deleted. `tasks_done` clears a fully completed list on request.
-
-Storage still follows your selected scope: session by default, project for sharing across sessions, or memory for temporary work.
-
-## Configure
-
-Open `/tasks` and choose **Settings** to change storage (`memory`, `session`, or `project`), widget visibility, and automatic cleanup. The defaults persist tasks per session and clear completed flat lists after the full list finishes. Hierarchical projects are retained until explicitly cleared.
-
-Configuration and persisted task data live under `~/.pi/tasks/` by default.
-
-## Develop
+## Development
 
 ```bash
 pnpm install
@@ -77,8 +95,6 @@ pi -e ./src/index.ts
 pnpm check
 ```
 
-`pnpm check` runs linting, type checking, tests, and the build.
-
-Agent instructions, tool descriptions, reminders, and draft prompts live in `prompts/*.md`. `src/prompts.ts` loads them relative to the package, with `{{name}}` placeholders for runtime values. Blank lines separate entries in `task-guidelines.md`. Tool schemas and UI labels remain in TypeScript.
+`pnpm check` runs linting, type checking, tests, and the build. If this checkout is already installed in Pi, use `/reload` to load local changes.
 
 Derived from [tintinweb/pi-tasks](https://github.com/tintinweb/pi-tasks), originally created by tintinweb. Licensed under [MIT](LICENSE).

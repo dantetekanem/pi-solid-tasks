@@ -69,14 +69,89 @@ describe("TaskWidget", () => {
     store.update(second.id, { status: "in_progress" });
     widget.setActiveTask(second.id);
     const lines = renderWidget(ui.state);
-    expect(lines[0]).toContain("1/2 subtasks");
+    expect(lines[0]).toContain("1/2 tasks");
     expect(lines[0]).toContain("50%");
     expect(lines.find(line => line.includes("Project"))).toContain("1/2 · 50%");
     expect(lines.find(line => line.includes("First"))).toContain("├─ ");
     expect(lines.find(line => line.includes("Building…"))).toContain("└─ ");
     store.update(second.id, { status: "completed" });
     widget.update();
-    expect(renderWidget(ui.state)[0]).toContain("2/2 subtasks");
+    expect(renderWidget(ui.state)[0]).toContain("2/2 tasks");
+  });
+
+  it("caps a mixed tree at five rows and two children while counting all tasks", () => {
+    const parents = ["First project", "Second project"].map(subject => {
+      const parent = store.create(subject, "Desc", undefined, undefined, undefined, { kind: "group" });
+      store.create(`${subject} A`, "Desc", undefined, undefined, undefined, { parentId: parent.id });
+      store.create(`${subject} B`, "Desc", undefined, undefined, undefined, { parentId: parent.id });
+      return parent;
+    });
+    const standalone = store.create("Standalone", "Desc");
+    widget.update();
+
+    const lines = renderWidget(ui.state);
+    const visibleIds = lines.flatMap(line => line.match(/#(\d+) /)?.[1] ?? []);
+    expect(visibleIds).toEqual([parents[0].id, "2", "3", parents[1].id, standalone.id]);
+    expect(lines[0]).toContain("0/5 tasks");
+    expect(lines.at(-1)).toContain("2 hidden (2 open)");
+    expect(store.list()).toHaveLength(7);
+  });
+
+  it.each(["top", "bottom"] as const)("prioritizes active children with their parents when hiding at %s", hiddenAt => {
+    widget = new TaskWidget(store, { hiddenAt });
+    widget.setUICtx(ui.ctx);
+    const activeIds: string[] = [];
+    for (let i = 0; i < 4; i++) {
+      const parent = store.create(`Project ${i}`, "Desc", undefined, undefined, undefined, { kind: "group" });
+      const child = store.create(`Child ${i}`, "Desc", undefined, undefined, undefined, { parentId: parent.id });
+      store.update(child.id, i < 2 ? { status: "completed" } : { status: "in_progress", owner: `worker-${i}` });
+      if (i >= 2) activeIds.push(parent.id, child.id);
+    }
+    const standalone = store.create("Next task", "Desc");
+    widget.update();
+
+    const lines = renderWidget(ui.state);
+    expect(lines.flatMap(line => line.match(/#(\d+) /)?.[1] ?? [])).toEqual([...activeIds, standalone.id]);
+    expect(lines[0]).toContain("2/5 tasks (2 done, 2 in progress, 1 open) - 40%");
+    expect(lines.find(line => line.includes("hidden"))).toContain("4 hidden (2 done, 2 groups)");
+  });
+
+  it("collapses completed groups while keeping their summary and current work", () => {
+    const config = { maxVisible: 5 };
+    widget = new TaskWidget(store, config);
+    widget.setUICtx(ui.ctx);
+    const previous = store.create("Previous project", "Desc", undefined, undefined, undefined, { kind: "group" });
+    for (let i = 0; i < 2; i++) {
+      const child = store.create(`Previous child ${i}`, "Desc", undefined, undefined, undefined, { parentId: previous.id });
+      store.update(child.id, { status: "completed" });
+    }
+    const current = store.create("Current project", "Desc", undefined, undefined, undefined, { kind: "group" });
+    const active = store.create("Current child", "Desc", undefined, undefined, undefined, { parentId: current.id });
+    const next = store.create("Next child", "Desc", undefined, undefined, undefined, { parentId: current.id });
+    const standalone = store.create("Standalone", "Desc");
+    store.update(active.id, { status: "in_progress" });
+    widget.update();
+
+    const lines = renderWidget(ui.state);
+    const visibleIds = lines.flatMap(line => line.match(/#(\d+) /)?.[1] ?? []);
+    expect(visibleIds).toHaveLength(5);
+    expect(visibleIds).toEqual(expect.arrayContaining([previous.id, current.id, active.id, next.id, standalone.id]));
+    expect(lines[0]).toContain("2/5 tasks");
+    expect(lines.at(-1)).toContain("2 hidden (2 done)");
+    expect(store.list()).toHaveLength(7);
+
+    config.maxVisible = 1;
+    widget.update();
+    expect(renderWidget(ui.state).flatMap(line => line.match(/#(\d+) /)?.[1] ?? [])).toEqual([current.id]);
+    config.maxVisible = 5;
+    store.update(active.id, { status: "completed" });
+    store.update(next.id, { status: "completed" });
+    widget.update();
+    const completedLines = renderWidget(ui.state);
+    const remainingIds = completedLines.flatMap(line => line.match(/#(\d+) /)?.[1] ?? []);
+    expect(remainingIds).toHaveLength(3);
+    expect(remainingIds).toEqual(expect.arrayContaining([previous.id, current.id, standalone.id]));
+    expect(completedLines[0]).toContain("4/5 tasks");
   });
 
   it("keeps tree siblings in task order when a later sibling completes", () => {
@@ -233,8 +308,8 @@ describe("TaskWidget", () => {
     expect(lines[6]).toContain("10 hidden (10 open)");
   });
 
-  it("respects maxVisible config as the total task limit", () => {
-    widget = new TaskWidget(store, { maxVisible: 8 });
+  it.each([{ maxVisible: 8 }, { showAll: true, maxVisible: 15 }])("caps legacy visibility settings at five rows: %j", config => {
+    widget = new TaskWidget(store, config);
     widget.setUICtx(ui.ctx);
     for (let i = 0; i < 15; i++) {
       store.create(`Task ${i + 1}`, "Desc");
@@ -242,9 +317,9 @@ describe("TaskWidget", () => {
     widget.update();
 
     const lines = renderWidget(ui.state);
-    // header + 8 tasks + status-aware overflow
-    expect(lines).toHaveLength(10);
-    expect(lines[9]).toContain("7 hidden (7 open)");
+    expect(lines).toHaveLength(7);
+    expect(lines.slice(1, 6).map(line => line.match(/#(\d+) /)?.[1])).toEqual(["1", "2", "3", "4", "5"]);
+    expect(lines[6]).toContain("10 hidden (10 open)");
   });
 
   it("shows up to two completed tasks, one current task, and the next pending tasks", () => {
@@ -334,20 +409,6 @@ describe("TaskWidget", () => {
     const lines = renderWidget(ui.state);
     // header + 3 tasks, no overflow
     expect(lines).toHaveLength(4);
-    expect(lines[lines.length - 1]).not.toContain("hidden");
-  });
-
-  it("shows all tasks when showAll is true even with maxVisible set", () => {
-    widget = new TaskWidget(store, { showAll: true, maxVisible: 5 });
-    widget.setUICtx(ui.ctx);
-    for (let i = 0; i < 15; i++) {
-      store.create(`Task ${i + 1}`, "Desc");
-    }
-    widget.update();
-
-    const lines = renderWidget(ui.state);
-    // header + 15 tasks, no overflow line
-    expect(lines).toHaveLength(16);
     expect(lines[lines.length - 1]).not.toContain("hidden");
   });
 
