@@ -1,3 +1,4 @@
+import { visibleWidth } from "@earendil-works/pi-tui";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TaskStore } from "../src/task-store.js";
 import { TaskWidget, type Theme, type UICtx } from "../src/ui/task-widget.js";
@@ -34,11 +35,11 @@ function mockUICtx() {
 }
 
 /** Render the widget and return its lines. */
-function renderWidget(state: ReturnType<typeof mockUICtx>["state"]): string[] {
+function renderWidget(state: ReturnType<typeof mockUICtx>["state"], width = 200): string[] {
   const entry = state.widgets.get("tasks");
   if (!entry?.content) return [];
   const theme = mockTheme();
-  const tui = { terminal: { columns: 200 }, requestRender() {} };
+  const tui = { terminal: { columns: width }, requestRender() {} };
   const result = entry.content(tui, theme);
   return result.render();
 }
@@ -168,6 +169,27 @@ describe("TaskWidget", () => {
     widget.update();
     const entry = ui.state.widgets.get("tasks");
     expect(entry?.content).toBeUndefined();
+  });
+
+  it.each(["subject", "activeForm"] as const)("keeps multiline %s within one terminal row without changing task data", field => {
+    const draft = "[draft] Review\n\ncomment\r\nwith\rdetails " + "more ".repeat(60);
+    const task = store.create(field === "subject" ? draft : "Review", draft, field === "activeForm" ? draft : undefined);
+    if (field === "activeForm") {
+      store.update(task.id, { status: "in_progress" });
+      widget.setActiveTask(task.id);
+    }
+    widget.update();
+
+    for (const width of [40, 200]) {
+      const lines = renderWidget(ui.state, width);
+      expect(lines).toHaveLength(2);
+      expect(lines[1]).toContain("[draft] Review comment");
+      for (const line of lines) {
+        expect(line).not.toMatch(/[\r\n]/);
+        expect(visibleWidth(line)).toBeLessThanOrEqual(width);
+      }
+    }
+    expect(store.get(task.id)).toMatchObject({ [field]: draft, description: draft });
   });
 
   it("renders pending tasks with ◻ icon", () => {

@@ -130,7 +130,7 @@ export class TaskWidget {
     const hierarchical = hasHierarchy(allTasks);
     const tasks = allTasks.filter(task => task.kind !== "group");
     const w = tui.terminal.columns;
-    const truncate = (line: string) => truncateToWidth(line, w);
+    const truncate = (line: string) => truncateToWidth(line.replace(/[\r\n]+/g, " "), w);
 
     if (allTasks.length === 0) return [];
 

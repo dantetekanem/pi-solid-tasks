@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.8.8
+
+### Fixed
+
+- Keep multiline task titles and active labels on one widget row to prevent stale spinner and footer fragments. Preserve the full stored draft.
+
 ## 0.8.7
 
 ### Removed
