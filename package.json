@@ -1,6 +1,6 @@
 {
   "name": "pi-solid-tasks",
-  "version": "0.8.5",
+  "version": "0.8.6",
   "private": true,
   "description": "Strict task tracking and coordination for pi.",
   "author": "Leonardo Pereira",
@@ -18,7 +18,7 @@
     "coordination"
   ],
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": ">=0.74.0",
+    "@earendil-works/pi-coding-agent": ">=0.85.1",
     "@earendil-works/pi-tui": ">=0.74.0"
   },
   "dependencies": {

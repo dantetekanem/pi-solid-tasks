@@ -1,4 +1,4 @@
-Create an initial task plan in one call. Prefer this tool when several concrete tasks are already known; use task_create for a single follow-up or custom positioning.
+Create an initial flat task plan in one call. Prefer this tool when several concrete tasks are already known; use task_create for a single follow-up or custom positioning. Omit kind, parentId, and children by default. Do not wrap the entire plan in one main group. Groups are optional for user-requested grouping or distinct deliverables that each need their own child tasks, not for phases or agent assignments.
 
 ## Input
 
@@ -6,10 +6,8 @@ Pass a nonempty `tasks` array in execution order. Root entries accept subject, d
 
 ```json
 {"tasks":[
-  {"kind":"group","subject":"Fix login timeout","description":"Login succeeds with regression coverage","children":[
-    {"subject":"Reproduce timeout","description":"Capture failing case"},
-    {"subject":"Fix and verify","description":"Implement fix and prove regression passes"}
-  ]},
+  {"subject":"Reproduce login timeout","description":"Capture failing case"},
+  {"subject":"Fix login timeout","description":"Implement fix and prove regression passes"},
   {"subject":"Document outcome","description":"Record verified behavior"}
 ]}
 ```

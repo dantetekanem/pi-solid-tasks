@@ -1,4 +1,4 @@
-Create one structured task or group for the current session. Prefer tasks_create_in_batch for an initial plan with several known tasks or group children. Use task_create for single follow-ups and custom positioning.
+Create one executable task for the current session by default. Prefer tasks_create_in_batch for an initial flat plan with several known tasks. Use task_create for single follow-ups and custom positioning. Do not create a main group just to contain the entire request.
 
 ## When to Use This Tool
 
@@ -29,7 +29,7 @@ NOTE that you should not use this tool if there is only one trivial task to do. 
 
 ## Task Fields
 
-- **kind** (optional): Use `group` for a top-level task containing direct subtasks; defaults to executable `task`. Groups derive status from children and are never assigned an owner or started manually.
+- **kind** (optional): Defaults to executable `task`; normally omit it. Use `group` only when the user requests grouping or distinct deliverables each need child tasks, not merely because work has several steps or agents. Groups derive status from children and are never assigned an owner or started manually.
 - **parentId** (optional): Root group to contain this executable subtask. Exactly one subtask level is allowed: no nested groups or sub-subtasks. Parent and kind are fixed at creation. Dependencies apply only between executable tasks.
 - **subject**: A brief, actionable title in imperative form (e.g., "Fix authentication bug in login flow")
 - **description**: Detailed description of what needs to be done, including context and acceptance criteria

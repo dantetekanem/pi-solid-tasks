@@ -8,7 +8,7 @@ Strict task tracking for [Pi](https://pi.dev). Keep unfinished work visible, giv
 pi install git:github.com/dantetekanem/pi-solid-tasks
 ```
 
-Restart Pi or run `/reload` in an open session. No manual configuration needed.
+Requires Pi 0.85.1 or newer. Restart Pi or run `/reload` in an open session. No manual configuration needed.
 
 Keep only one task extension enabled: this package uses the same tool names as `pi-tasks`. Pi extensions run with full system access, so review the code before installing.
 
@@ -37,9 +37,15 @@ The widget shows up to five task rows, including parents, with at most two subta
 
 These checks enforce task state and order. You and the agent still own the quality of the work and its verification.
 
+When an agent run settles with unfinished tasks, the extension sends a continuation message that starts another run. This repeats until the queue is complete, without a timer or a user nudge. It does not claim or complete tasks itself, and it does not start work merely because you opened or reloaded a session.
+
+Open question dialogs hold continuation. For a blocking question in chat, `task_wait` shows the question and holds continuation until your next message; the task stays open. Extension reports do not release that hold. Active `pi-extended-teams` agents use their existing report delivery to resume the lead. Escape/abort and model errors do not trigger automatic retries.
+
 ## Projects and subtasks
 
-For larger work, the agent can create a grouped plan with `tasks_create_in_batch`:
+Flat tasks are the default, including for work with many steps or several agents. A parent that only repeats the overall request adds no useful division. Use groups only when requested or when distinct deliverables each need their own child tasks; dependencies and ownership do not require grouping.
+
+If you explicitly request a grouped plan, `tasks_create_in_batch` supports it:
 
 ```json
 {"tasks":[{"kind":"group","subject":"Fix login timeouts","description":"Login works with regression coverage","children":[
@@ -86,6 +92,7 @@ Create a known initial plan with `tasks_create_in_batch`; invalid input creates 
 | `task_get` | Read a task, its dependencies, and progress |
 | `task_update` | Update status, ownership, details, or dependencies |
 | `task_done` | Complete one task and return the next ready task |
+| `task_wait` | Ask a blocking question and wait for the next user message |
 | `tasks_done` | Clear a fully completed list |
 | `task_output` | Read tracked background-process output |
 | `task_stop` | Stop a tracked background process |
@@ -97,6 +104,7 @@ Agent prompts live in [`prompts/`](prompts/) as Markdown, separate from the impl
 - `completion-contract.md`, `bulk-work-decomposition.md`, and `task-guidelines.md` define the workflow.
 - `task-create.md`, `tasks-create-in-batch.md`, `task-list.md`, `task-get.md`, `task-update.md`, `task-done.md`, `tasks-done.md`, `task-output.md`, and `task-stop.md` describe the tools.
 - `task-done-handoff.md` supplies the completion response and next-step instructions.
+- `task-continuation.md` supplies the runtime idle continuation; `task-wait.md` describes the blocking-question tool.
 - `system-reminder.md` reminds the agent about unfinished work.
 - `draft-task-description.md` and `draft-task-kickoff.md` handle `/add-task`.
 

@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.8.6
+
+### Added
+
+- Resume settled agent runs automatically when tracked tasks remain unfinished, while respecting question holds, active delegated work, cancellation, and model errors.
+- `task_wait` asks a blocking question and holds automatic continuation until the next user message.
+
+### Changed
+
+- Default to flat executable tasks; reserve groups for explicit requests or distinct deliverables that need subtasks.
+- Require Pi 0.85.1 or newer for runtime continuation.
+
 ## 0.8.5
 
 ### Fixed
