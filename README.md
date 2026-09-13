@@ -39,7 +39,7 @@ These checks enforce task state and order. You and the agent still own the quali
 
 When an agent run settles with unfinished tasks, the extension sends a continuation message that starts another run. This repeats until the queue is complete, without a timer or a user nudge. It does not claim or complete tasks itself, and it does not start work merely because you opened or reloaded a session.
 
-Open question dialogs hold continuation. For a blocking question in chat, `task_wait` shows the question and holds continuation until your next message; the task stays open. Extension reports do not release that hold. Active `pi-extended-teams` agents use their existing report delivery to resume the lead. Escape/abort and model errors do not trigger automatic retries.
+Open question dialogs hold continuation. Active `pi-extended-teams` agents use their existing report delivery to resume the lead. Escape/abort and model errors do not trigger automatic retries.
 
 ## Projects and subtasks
 
@@ -92,7 +92,6 @@ Create a known initial plan with `tasks_create_in_batch`; invalid input creates 
 | `task_get` | Read a task, its dependencies, and progress |
 | `task_update` | Update status, ownership, details, or dependencies |
 | `task_done` | Complete one task and return the next ready task |
-| `task_wait` | Ask a blocking question and wait for the next user message |
 | `tasks_done` | Clear a fully completed list |
 | `task_output` | Read tracked background-process output |
 | `task_stop` | Stop a tracked background process |
@@ -104,7 +103,7 @@ Agent prompts live in [`prompts/`](prompts/) as Markdown, separate from the impl
 - `completion-contract.md`, `bulk-work-decomposition.md`, and `task-guidelines.md` define the workflow.
 - `task-create.md`, `tasks-create-in-batch.md`, `task-list.md`, `task-get.md`, `task-update.md`, `task-done.md`, `tasks-done.md`, `task-output.md`, and `task-stop.md` describe the tools.
 - `task-done-handoff.md` supplies the completion response and next-step instructions.
-- `task-continuation.md` supplies the runtime idle continuation; `task-wait.md` describes the blocking-question tool.
+- `task-continuation.md` supplies the runtime idle continuation.
 - `system-reminder.md` reminds the agent about unfinished work.
 - `draft-task-description.md` and `draft-task-kickoff.md` handle `/add-task`.
 

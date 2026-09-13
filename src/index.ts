@@ -65,7 +65,7 @@ function draftTaskKickoffPrompt(taskId: string, rawTask: string): string {
 }
 
 /** Task tool names — used to detect task tool usage for reminder suppression. */
-const TASK_TOOL_NAMES = new Set(["task_create", "tasks_create_in_batch", "task_list", "task_get", "task_update", "task_done", "tasks_done", "task_wait", "task_output", "task_stop"]);
+const TASK_TOOL_NAMES = new Set(["task_create", "tasks_create_in_batch", "task_list", "task_get", "task_update", "task_done", "tasks_done", "task_output", "task_stop"]);
 
 /** How many turns without task tool usage before injecting a reminder. */
 const REMINDER_INTERVAL = 4;

@@ -1,5 +1,4 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { Type } from "typebox";
 import { loadPrompt } from "./prompts.js";
 import type { TaskStore } from "./task-store.js";
 
@@ -9,7 +8,6 @@ const QUESTION_TOOLS = new Set(["ask_user", "ask_user_batch"]);
 export function registerTaskContinuation(pi: ExtensionAPI, getStore: () => TaskStore): void {
   let armed = false;
   let settled = false;
-  let waitingTaskId: string | undefined;
   let uiPromptOpen = false;
   let stopReason: string | undefined;
   let runSignal: AbortSignal | undefined;
@@ -17,7 +15,6 @@ export function registerTaskContinuation(pi: ExtensionAPI, getStore: () => TaskS
 
   function reset() {
     armed = settled = uiPromptOpen = false;
-    waitingTaskId = undefined;
     stopReason = undefined;
     runSignal = undefined;
     openQuestions.clear();
@@ -31,8 +28,6 @@ export function registerTaskContinuation(pi: ExtensionAPI, getStore: () => TaskS
     }
     if (uiPromptOpen || openQuestions.size > 0) return;
     const unfinished = getStore().list().filter(task => task.status !== "completed");
-    if (unfinished.some(task => task.id === waitingTaskId)) return;
-    waitingTaskId = undefined;
     if (!unfinished.length) {
       armed = false;
       return;
@@ -82,9 +77,6 @@ export function registerTaskContinuation(pi: ExtensionAPI, getStore: () => TaskS
     settled = true;
     continueIfIdle(ctx);
   });
-  pi.on("input", (event) => {
-    if (event.source !== "extension") waitingTaskId = undefined;
-  });
   pi.on("ui_prompt_start", () => { uiPromptOpen = true; });
   pi.on("ui_prompt_end", (_event, ctx) => {
     uiPromptOpen = false;
@@ -95,26 +87,5 @@ export function registerTaskContinuation(pi: ExtensionAPI, getStore: () => TaskS
   });
   pi.on("tool_execution_end", (event, ctx) => {
     if (openQuestions.delete(event.toolCallId)) continueIfIdle(ctx);
-  });
-
-  pi.registerTool({
-    name: "task_wait",
-    label: "task_wait",
-    description: loadPrompt("task-wait"),
-    parameters: Type.Object({
-      taskId: Type.String({ description: "Unfinished task blocked on the user's answer" }),
-      question: Type.String({ minLength: 1, maxLength: 2000, description: "The concrete blocking question to show the user" }),
-    }),
-    async execute(_id, { taskId, question }) {
-      const task = getStore().get(taskId);
-      const text = question.trim();
-      if (!task || task.status === "completed" || !text) throw new Error("task_wait requires an unfinished task and a nonempty question");
-      waitingTaskId = taskId;
-      return {
-        content: [{ type: "text", text: `Task #${taskId} is waiting for your answer:\n${text}` }],
-        details: { taskId, question: text },
-        terminate: true,
-      };
-    },
   });
 }

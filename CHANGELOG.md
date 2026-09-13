@@ -1,11 +1,16 @@
 # Changelog
 
+## 0.8.7
+
+### Removed
+
+- Remove the blocking-question task tool and its continuation hold; retain open question dialog handling.
+
 ## 0.8.6
 
 ### Added
 
 - Resume settled agent runs automatically when tracked tasks remain unfinished, while respecting question holds, active delegated work, cancellation, and model errors.
-- `task_wait` asks a blocking question and holds automatic continuation until the next user message.
 
 ### Changed
 

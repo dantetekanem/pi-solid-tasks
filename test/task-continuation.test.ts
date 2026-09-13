@@ -102,48 +102,6 @@ describe("runtime task continuation", () => {
     expect(m.pi.sendMessage).not.toHaveBeenCalled();
   });
 
-  it("holds a concrete task question until real user input, not an extension follow-up", async () => {
-    const m = setup();
-    await m.execute("task_create", { subject: "Publish", description: "Needs permission" });
-    await m.start();
-    const result = await m.execute("task_wait", { taskId: "1", question: "May I publish this change?" });
-    expect(result.terminate).toBe(true);
-    expect(result.details).toEqual({ taskId: "1", question: "May I publish this change?" });
-    await m.finish("toolUse");
-    await m.fire("input", { source: "extension", text: "Report arrived" });
-    await m.start();
-    await m.finish();
-    expect(m.pi.sendMessage).not.toHaveBeenCalled();
-    await m.fire("input", { source: "interactive", text: "Yes" });
-    await m.start();
-    await m.finish();
-    expect(m.pi.sendMessage).toHaveBeenCalledTimes(1);
-  });
-
-  it("rejects an empty question or a missing/completed task without disabling continuation", async () => {
-    const m = setup();
-    await m.execute("task_create", { subject: "Open", description: "Desc" });
-    await m.start();
-    await expect(m.execute("task_wait", { taskId: "1", question: "   " })).rejects.toThrow();
-    await expect(m.execute("task_wait", { taskId: "999", question: "May I publish?" })).rejects.toThrow();
-    await m.finish();
-    expect(m.pi.sendMessage).toHaveBeenCalledTimes(1);
-    await m.execute("task_done", { taskId: "1" });
-    await expect(m.execute("task_wait", { taskId: "1", question: "May I publish?" })).rejects.toThrow();
-  });
-
-  it("releases a question hold when the blocked task is completed elsewhere", async () => {
-    const m = setup();
-    await m.execute("tasks_create_in_batch", { tasks: [
-      { subject: "Question", description: "Desc" }, { subject: "Next", description: "Desc" },
-    ] });
-    await m.start();
-    await m.execute("task_wait", { taskId: "1", question: "Which target?" });
-    await m.execute("task_done", { taskId: "1" });
-    await m.finish();
-    expect(m.pi.sendMessage.mock.lastCall?.[0].details).toEqual({ taskIds: ["2"] });
-  });
-
   it("does not retry a run that failed before producing an assistant result", async () => {
     const m = setup();
     await m.execute("task_create", { subject: "Open", description: "Desc" });
@@ -184,11 +142,10 @@ describe("runtime task continuation", () => {
     expect(m.pi.sendMessage).toHaveBeenCalledTimes(1);
   });
 
-  it("resets wait and run state across session replacement without waking on startup", async () => {
+  it("resets run state across session replacement without waking on startup", async () => {
     const m = setup();
     await m.execute("task_create", { subject: "Open", description: "Desc" });
     await m.start();
-    await m.execute("task_wait", { taskId: "1", question: "Which target?" });
     await m.fire("session_shutdown");
     await m.fire("session_start", { reason: "reload" });
     await m.fire("agent_settled");
