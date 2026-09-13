@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.8.9
+
+### Changed
+
+- Lighten the widget header percentage with a 20% white tint of the accent color in truecolor terminals.
+
 ## 0.8.8
 
 ### Fixed

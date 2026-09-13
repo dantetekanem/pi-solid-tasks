@@ -144,11 +144,20 @@ export class TaskWidget {
     if (pending.length > 0) parts.push(`${pending.length} open`);
     const progress = taskProgress(allTasks);
     const statusText = hierarchical
-      ? `${progress.completed}/${progress.total} tasks (${parts.join(", ") || "no tasks"}) - ${progress.percent}%`
-      : `${tasks.length} tasks (${parts.join(", ")}) - ${progress.percent}%`;
+      ? `${progress.completed}/${progress.total} tasks (${parts.join(", ") || "no tasks"}) - `
+      : `${tasks.length} tasks (${parts.join(", ")}) - `;
 
     const spinnerChar = SPINNER[this.widgetFrame % SPINNER.length];
-    const lines: string[] = [truncate(theme.fg("accent", "●") + " " + theme.fg("accent", statusText))];
+    const percentage = theme.fg("accent", `${progress.percent}%`).replace(
+      /\x1b\[38;2;(\d+);(\d+);(\d+)m/g,
+      (_match: string, red: string, green: string, blue: string) => {
+        const whiteAlpha = 0.2;
+        const channels = [red, green, blue].map(Number);
+        const tintedRgb = channels.map(channel => Math.round(channel + (255 - channel) * whiteAlpha));
+        return `\x1b[38;2;${tintedRgb.join(";")}m`;
+      },
+    );
+    const lines: string[] = [truncate(theme.fg("accent", "●") + " " + theme.fg("accent", statusText) + percentage)];
 
     const limit = Math.min(this.config.maxVisible ?? MAX_VISIBLE_TASK_ROWS, MAX_VISIBLE_TASK_ROWS);
     const hiddenAt = this.config.hiddenAt ?? "bottom";
