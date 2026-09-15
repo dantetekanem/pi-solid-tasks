@@ -34,7 +34,7 @@ NOTE that you should not use this tool if there is only one trivial task to do. 
 - **subject**: A brief, actionable title in imperative form (e.g., "Fix authentication bug in login flow")
 - **description**: Detailed description of what needs to be done, including context and acceptance criteria
 - **activeForm** (optional): Present continuous form shown in the spinner when the task is in_progress (e.g., "Fixing authentication bug"). If omitted, the spinner shows the subject instead.
-- **position** (optional): Place the new task at the beginning of open tasks, at the end of open tasks, or `before`/`after` a referenced open task. Omit it to use the end of open tasks.
+- **position** (optional): Place the new task at the beginning of open tasks, at the end of open tasks, or `before`/`after` a referenced open task. Omit it to use the end of open tasks. Relative insertion first pulls unfinished prerequisites ahead of their dependents, then inserts beside the anchor. This changes queue order, not dependencies. task_append and task_prepend provide this relative insertion directly for new executable tasks.
 
 All tasks are created with status `pending`.
 

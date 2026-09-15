@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.8.10
+
+### Added
+
+- `task_append` and `task_prepend` create new tasks after or before an existing open task and return the execution queue.
+
+### Changed
+
+- Sort unfinished prerequisites before dependent tasks when inserting beside an existing task, without changing dependencies or task IDs.
+
 ## 0.8.9
 
 ### Changed

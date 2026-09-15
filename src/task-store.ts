@@ -226,6 +226,31 @@ export class TaskStore {
     return position.type === "before" ? anchorIndex : anchorIndex + 1;
   }
 
+  /** Pull unfinished prerequisites ahead of dependents, following existing queue priority. */
+  private dependencyOrderedOpenTasks(tasks: Task[]): Task[] {
+    const graph = this.dependencyGraph();
+    if (!this.graphReferencesKnownTasks(graph) || !this.graphIsAcyclic(graph)) {
+      throw new TaskPositionError("Cannot order tasks: dependencies contain missing tasks or a cycle");
+    }
+    const blockers = new Map<string, Task[]>(tasks.map(task => [task.id, []]));
+    for (const task of tasks) {
+      for (const dependentId of graph.get(task.id) ?? []) {
+        blockers.get(dependentId)?.push(task);
+      }
+    }
+
+    const ordered: Task[] = [];
+    const visited = new Set<string>();
+    const visit = (task: Task): void => {
+      if (visited.has(task.id)) return;
+      visited.add(task.id);
+      for (const blocker of blockers.get(task.id) ?? []) visit(blocker);
+      ordered.push(task);
+    };
+    for (const task of tasks) visit(task);
+    return ordered;
+  }
+
   create(
     subject: string,
     description: string,
@@ -237,7 +262,10 @@ export class TaskStore {
     return this.withLock(() => {
       this.validateCreateOptions(options);
       const ordered = this.orderedTasks();
-      const openTasks = ordered.filter(task => task.status !== "completed");
+      const existingOpenTasks = ordered.filter(task => task.status !== "completed");
+      const openTasks = position.type === "before" || position.type === "after"
+        ? this.dependencyOrderedOpenTasks(existingOpenTasks)
+        : existingOpenTasks;
       const completedTasks = ordered.filter(task => task.status === "completed");
       const insertionIndex = this.createIndex(position, openTasks);
       const now = Date.now();

@@ -129,6 +129,60 @@ describe("/add-task", () => {
   });
 });
 
+describe("relative task creation tools", () => {
+  it.each(["task_append", "task_prepend"])("%s creates a new task beside a blocked anchor and returns the sorted queue", async (name) => {
+    const mock = mockPi();
+    initExtension(mock.pi as any);
+    await mock.executeTool("tasks_create_in_batch", { tasks: [
+      { subject: "Dependent", description: "Desc" },
+      { subject: "Blocker", description: "Desc" },
+    ] });
+    await mock.executeTool("task_update", { taskId: "1", addBlockedBy: ["2"] });
+
+    const result = await mock.executeTool(name, {
+      taskId: "1", subject: "Inserted", description: "Acceptance",
+      activeForm: "Inserting", metadata: { area: "core" },
+    });
+
+    const queue = name === "task_append" ? ["2", "1", "3"] : ["2", "3", "1"];
+    expect(result.details.task).toMatchObject({
+      id: "3", subject: "Inserted", description: "Acceptance", status: "pending",
+      activeForm: "Inserting", metadata: { area: "core" }, blocks: [], blockedBy: [],
+    });
+    expect(result.details.queue).toEqual(queue);
+    const list: string = (await mock.executeTool("task_list", {})).content[0].text;
+    expect([...list.matchAll(/^#(\d+)/gm)].map(match => match[1])).toEqual(queue);
+    await mock.executeTool("task_update", { taskId: "2", status: "in_progress", owner: "lead" });
+    expect((await mock.executeTool("task_done", { taskId: "2" })).details.nextTask.id).toBe(queue[1]);
+  });
+
+  it.each(["task_append", "task_prepend"])("%s rejects invalid anchors and parents without consuming an ID", async (name) => {
+    const mock = mockPi();
+    initExtension(mock.pi as any);
+    await mock.executeTool("task_create", { subject: "History", description: "Desc" });
+    await mock.executeTool("task_done", { taskId: "1" });
+    for (const taskId of ["999", "1"]) {
+      await expect(mock.executeTool(name, { taskId, subject: "Invalid", description: "Desc" })).rejects.toThrow(/not found|completed/);
+    }
+    await mock.executeTool("task_create", { kind: "group", subject: "Project", description: "Desc" });
+    await expect(mock.executeTool(name, { taskId: "2", parentId: "999", subject: "Invalid", description: "Desc" })).rejects.toThrow(/Parent/);
+    const child = await mock.executeTool(name, { taskId: "2", parentId: "2", subject: "Child", description: "Desc" });
+    expect(child.details.task).toMatchObject({ id: "3", parentId: "2" });
+    expect((await mock.executeTool("task_get", { taskId: "2" })).content[0].text).toContain("Children: #3");
+  });
+
+  it.each(["task_append", "task_prepend"])("%s suppresses the task reminder as task activity", async (name) => {
+    const mock = mockPi();
+    initExtension(mock.pi as any);
+    await mock.executeTool("task_create", { subject: "Anchor", description: "Desc" });
+    for (let i = 0; i < 4; i++) await mock.fireLifecycle("turn_start", {}, mockCtx());
+    await mock.executeTool(name, { taskId: "1", subject: "New", description: "Desc" });
+    await mock.fireLifecycle("tool_result", { toolName: name });
+    await mock.fireLifecycle("tool_result", { toolName: "read" });
+    expect(await mock.fireLifecycle("context", { messages: [] })).toEqual({});
+  });
+});
+
 describe("tasks_create_in_batch", () => {
   it("returns grouped task context and rejects partial plans while preserving single creation IDs", async () => {
     const mock = mockPi();

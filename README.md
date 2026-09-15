@@ -87,6 +87,8 @@ Create a known initial plan with `tasks_create_in_batch`; invalid input creates 
 | Tool | Purpose |
 | --- | --- |
 | `task_create` | Create a task or group and choose its position |
+| `task_append` | Create a new task after an existing open task |
+| `task_prepend` | Create a new task before an existing open task |
 | `tasks_create_in_batch` | Create an ordered plan with optional group children |
 | `task_list` | Show tracked work and the execution queue |
 | `task_get` | Read a task, its dependencies, and progress |
@@ -96,12 +98,20 @@ Create a known initial plan with `tasks_create_in_batch`; invalid input creates 
 | `task_output` | Read tracked background-process output |
 | `task_stop` | Stop a tracked background process |
 
+For new work beside an existing task, pass its ID as `taskId`:
+
+```json
+{"taskId":"3","subject":"Verify the fix","description":"Run the focused regression"}
+```
+
+Use `task_append` for after, or `task_prepend` for before. Both first pull unfinished prerequisites ahead of dependent tasks, then insert next to the anchor. Completed history stays last. Dependencies, IDs, and owners do not change. The response includes the new task and the sorted execution queue. An optional `parentId` places the new task in a group; it is not inherited from the anchor. Missing or completed anchors are rejected.
+
 ## Prompts
 
 Agent prompts live in [`prompts/`](prompts/) as Markdown, separate from the implementation:
 
 - `completion-contract.md`, `bulk-work-decomposition.md`, and `task-guidelines.md` define the workflow.
-- `task-create.md`, `tasks-create-in-batch.md`, `task-list.md`, `task-get.md`, `task-update.md`, `task-done.md`, `tasks-done.md`, `task-output.md`, and `task-stop.md` describe the tools.
+- `task-create.md`, `task-append.md`, `task-prepend.md`, `tasks-create-in-batch.md`, `task-list.md`, `task-get.md`, `task-update.md`, `task-done.md`, `tasks-done.md`, `task-output.md`, and `task-stop.md` describe the tools.
 - `task-done-handoff.md` supplies the completion response and next-step instructions.
 - `task-continuation.md` supplies the runtime idle continuation.
 - `system-reminder.md` reminds the agent about unfinished work.

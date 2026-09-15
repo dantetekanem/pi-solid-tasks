@@ -3,6 +3,8 @@
  *
  * Tools:
  *   task_create   — Create a structured task
+ *   task_append   — Create a new task after an existing task
+ *   task_prepend  — Create a new task before an existing task
  *   tasks_create_in_batch — Create an initial plan with optional group children
  *   task_list     — List all tasks with status
  *   task_get      — Get full task details
@@ -65,7 +67,7 @@ function draftTaskKickoffPrompt(taskId: string, rawTask: string): string {
 }
 
 /** Task tool names — used to detect task tool usage for reminder suppression. */
-const TASK_TOOL_NAMES = new Set(["task_create", "tasks_create_in_batch", "task_list", "task_get", "task_update", "task_done", "tasks_done", "task_output", "task_stop"]);
+const TASK_TOOL_NAMES = new Set(["task_create", "task_append", "task_prepend", "tasks_create_in_batch", "task_list", "task_get", "task_update", "task_done", "tasks_done", "task_output", "task_stop"]);
 
 /** How many turns without task tool usage before injecting a reminder. */
 const REMINDER_INTERVAL = 4;
@@ -339,6 +341,38 @@ export default function (pi: ExtensionAPI) {
     activeForm: Type.Optional(Type.String()),
     metadata: Type.Optional(Type.Record(Type.String(), Type.Any())),
   };
+  for (const [name, type] of [["task_append", "after"], ["task_prepend", "before"]] as const) {
+    pi.registerTool({
+      name,
+      label: name,
+      description: loadPrompt(name.replaceAll("_", "-")),
+      parameters: Type.Object({
+        taskId: Type.String({ description: "Existing open task to insert beside" }),
+        ...batchLeafFields,
+        parentId: Type.Optional(Type.String({ description: "Root group for the new task; omitted means a root task" })),
+      }),
+      async execute(_toolCallId, params) {
+        const task = store.create(
+          params.subject,
+          params.description,
+          params.activeForm,
+          params.metadata,
+          { type, taskId: params.taskId },
+          { parentId: params.parentId },
+        );
+        autoClear.resetBatchCountdown();
+        widget.update();
+        const queue = store.list()
+          .filter(candidate => candidate.kind !== "group" && candidate.status !== "completed")
+          .map(candidate => candidate.id);
+        return {
+          ...textResult(`Task #${task.id} created successfully: ${task.subject}\nExecution queue: ${queue.map(id => `#${id}`).join(", ")}`),
+          details: { task, queue },
+        };
+      },
+    });
+  }
+
   pi.registerTool({
     name: "tasks_create_in_batch",
     label: "tasks_create_in_batch",
