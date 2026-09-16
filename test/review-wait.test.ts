@@ -118,6 +118,7 @@ describe("registered external review waits", () => {
     await m.start();
     await expect(m.wait(reason === "two sources" ? { schedulerTaskId: "existing" } : {})).rejects.toThrow();
     await m.finish();
+    await vi.advanceTimersByTimeAsync(300_000);
     expect(m.continuations()).toHaveLength(1);
   });
 
@@ -138,6 +139,8 @@ describe("registered external review waits", () => {
     if (reason === "queue") m.store.create("Independent", "Can proceed");
     if (reason === "provider lost") m.events.removeAllListeners("agentic-code-review:wait-probe");
     await vi.advanceTimersByTimeAsync(120_000);
+    expect(m.continuations()).toHaveLength(0);
+    await vi.advanceTimersByTimeAsync(300_000);
     expect(m.continuations()).toHaveLength(1);
     expect(m.store.get("1")?.status).toBe("in_progress");
     expect(vi.getTimerCount()).toBe(0);

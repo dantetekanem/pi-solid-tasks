@@ -5,6 +5,8 @@ import { registerTaskWait } from "./task-wait.js";
 
 const CHILD_PROBE = "pi-extended-teams:child-agent-lifecycle-probe";
 const QUESTION_TOOLS = new Set(["ask_user", "ask_user_batch"]);
+const NUDGE_DELAY_MS = 5 * 60_000;
+const MAX_NUDGES = 2;
 
 export function registerTaskContinuation(
   pi: ExtensionAPI,
@@ -16,10 +18,19 @@ export function registerTaskContinuation(
   let uiPromptOpen = false;
   let stopReason: string | undefined;
   let runSignal: AbortSignal | undefined;
+  let nudges = 0;
+  let nudgeTimer: ReturnType<typeof setTimeout> | undefined;
   const openQuestions = new Set<string>();
   const wait = registerTaskWait(pi, getStore, continueIfIdle, onWaitChanged);
 
+  function clearNudgeTimer() {
+    if (nudgeTimer) clearTimeout(nudgeTimer);
+    nudgeTimer = undefined;
+  }
+
   function reset(_event: unknown, ctx: ExtensionContext) {
+    clearNudgeTimer();
+    nudges = 0;
     wait.clear(ctx);
     armed = settled = uiPromptOpen = false;
     stopReason = undefined;
@@ -27,7 +38,7 @@ export function registerTaskContinuation(
     openQuestions.clear();
   }
 
-  function continueIfIdle(ctx: ExtensionContext) {
+  function continueIfIdle(ctx: ExtensionContext, reminderDue = false) {
     if (!armed || !settled || !ctx.isIdle() || ctx.hasPendingMessages()) return;
     if (!stopReason || runSignal?.aborted || stopReason === "aborted" || stopReason === "error") {
       armed = false;
@@ -53,10 +64,19 @@ export function registerTaskContinuation(
         if (snapshot.sessionId === sessionId && (snapshot.running > 0 || snapshot.queued > 0)) delegated = true;
       },
     });
-    if (delegated) return;
+    if (delegated || nudges >= MAX_NUDGES) return;
+    if (!reminderDue) {
+      nudgeTimer ??= setTimeout(() => {
+        nudgeTimer = undefined;
+        continueIfIdle(ctx, true);
+      }, NUDGE_DELAY_MS);
+      nudgeTimer.unref();
+      return;
+    }
 
-    // Consume before sending: another settled notification cannot queue a duplicate.
+    // Consume before sending: automatic runs must not reset the reminder budget.
     armed = false;
+    nudges++;
     const shown = unfinished.slice(0, 20);
     pi.sendMessage({
       customType: "tasks-continuation",
@@ -75,13 +95,21 @@ export function registerTaskContinuation(
   pi.on("session_shutdown", reset);
   pi.on("session_tree", reset);
   pi.on("agent_start", (_event, ctx) => {
+    clearNudgeTimer();
     wait.clear(ctx);
-    armed = true;
+    armed = nudges < MAX_NUDGES;
     settled = false;
     stopReason = undefined;
     runSignal = undefined;
   });
-  pi.on("input", (_event, ctx) => { wait.clear(ctx); });
+  pi.on("input", (event, ctx) => {
+    clearNudgeTimer();
+    wait.clear(ctx);
+    if (event.source === "interactive" || event.source === "rpc") {
+      nudges = 0;
+      armed = true;
+    }
+  });
   pi.on("message_start", (event, ctx) => {
     if (event.message.role === "user") wait.clear(ctx);
   });

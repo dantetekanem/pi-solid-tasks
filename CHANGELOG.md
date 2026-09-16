@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.8.12
+
+### Fixed
+
+- Wait five idle minutes before nudging the agent about unfinished tasks, with at most two reminders per user request. Automatic turns do not reset the limit.
+- Ask the agent to reassess available work rather than forcing continuation or repeating the last command.
+
 ## 0.8.11
 
 ### Added

@@ -166,6 +166,7 @@ describe("explicit scheduler-backed task_wait", () => {
     await m.start();
     await expect(m.wait()).rejects.toThrow();
     await m.finish();
+    await vi.advanceTimersByTimeAsync(300_000);
     expect(m.continuations()).toHaveLength(1);
     expect(vi.getTimerCount()).toBe(0);
   });
@@ -188,6 +189,7 @@ describe("explicit scheduler-backed task_wait", () => {
       m.wait({ ...request, schedulerTaskId: reason === "prefix" ? "task-re" : "task-review" }),
     ).rejects.toThrow();
     await m.finish();
+    await vi.advanceTimersByTimeAsync(300_000);
     expect(m.continuations()).toHaveLength(1);
   });
 
@@ -277,6 +279,8 @@ describe("explicit scheduler-backed task_wait", () => {
     if (reason === "schedule edit") save(schedule({ command: "other check" }));
     await vi.advanceTimersByTimeAsync(60_000);
     await m.fire("agent_settled");
+    expect(m.continuations()).toHaveLength(0);
+    await vi.advanceTimersByTimeAsync(300_000);
     expect(m.continuations()).toHaveLength(1);
     expect(m.store.get("1")?.status).toBe("in_progress");
     expect(vi.getTimerCount()).toBe(0);
@@ -336,6 +340,8 @@ describe("explicit scheduler-backed task_wait", () => {
     await m.finish();
     save(schedule({ status: "fired", enabled: false, result: { attemptId: "a", wakeDisposition } }));
     await vi.advanceTimersByTimeAsync(40_000);
+    expect(m.continuations()).toHaveLength(0);
+    await vi.advanceTimersByTimeAsync(300_000);
     expect(m.continuations()).toHaveLength(1);
   });
 
@@ -410,6 +416,7 @@ describe("explicit scheduler-backed task_wait", () => {
     await m.wait();
     await m.finish();
     await vi.advanceTimersByTimeAsync(status === "running" ? 35_000 : 635_000);
+    await vi.advanceTimersByTimeAsync(300_000);
     expect(m.continuations()).toHaveLength(1);
     expect(vi.getTimerCount()).toBe(0);
   });
@@ -421,6 +428,7 @@ describe("explicit scheduler-backed task_wait", () => {
     await m.wait();
     await m.finish();
     await vi.advanceTimersByTimeAsync(10_000);
+    await vi.advanceTimersByTimeAsync(300_000);
     expect(m.continuations()).toHaveLength(1);
   });
 
@@ -435,6 +443,7 @@ describe("explicit scheduler-backed task_wait", () => {
     await m.start();
     await expect(m.wait()).rejects.toThrow("changed during admission");
     await m.finish();
+    await vi.advanceTimersByTimeAsync(300_000);
     expect(m.continuations()).toHaveLength(1);
     expect(vi.getTimerCount()).toBe(0);
   });
@@ -457,6 +466,7 @@ describe("explicit scheduler-backed task_wait", () => {
     await m.wait();
     await m.fire("input", { source: "interactive", text: "Stop waiting" });
     await m.finish();
+    await vi.advanceTimersByTimeAsync(300_000);
     expect(m.continuations()).toHaveLength(1);
     expect(vi.getTimerCount()).toBe(0);
   });
@@ -480,6 +490,7 @@ describe("explicit scheduler-backed task_wait", () => {
     await m.finish();
     await m.start();
     await m.finish();
+    await vi.advanceTimersByTimeAsync(300_000);
     expect(m.continuations()).toHaveLength(1);
     expect(vi.getTimerCount()).toBe(0);
   });

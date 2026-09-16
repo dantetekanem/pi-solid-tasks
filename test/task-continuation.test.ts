@@ -1,8 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import initExtension from "../src/index.js";
 
-beforeEach(() => { process.env.PI_TASKS = "off"; });
-afterEach(() => { delete process.env.PI_TASKS; });
+const NUDGE_DELAY = 5 * 60_000;
+beforeEach(() => {
+  process.env.PI_TASKS = "off";
+  vi.useFakeTimers();
+});
+afterEach(() => {
+  delete process.env.PI_TASKS;
+  vi.clearAllTimers();
+  vi.useRealTimers();
+});
 
 function setup() {
   const handlers = new Map<string, Array<(event: any, ctx: any) => unknown>>();
@@ -40,7 +48,7 @@ function setup() {
 }
 
 describe("runtime task continuation", () => {
-  it("wakes once per settled run until all tasks finish, without claiming or completing work", async () => {
+  it.each(["interactive", "rpc"])("caps nudges at two until new %s input, without changing task state", async (source) => {
     const m = setup();
     await m.execute("tasks_create_in_batch", { tasks: [
       { subject: "First", description: "First evidence" }, { subject: "Second", description: "Second evidence" },
@@ -50,6 +58,9 @@ describe("runtime task continuation", () => {
     expect(m.pi.sendMessage).not.toHaveBeenCalled();
     await m.finish();
     await m.fire("agent_settled");
+    await vi.advanceTimersByTimeAsync(NUDGE_DELAY - 1);
+    expect(m.pi.sendMessage).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
     expect(m.pi.sendMessage).toHaveBeenCalledTimes(1);
     expect(m.pi.sendMessage).toHaveBeenLastCalledWith(expect.objectContaining({
       customType: "tasks-continuation", details: { taskIds: ["1", "2"] },
@@ -57,18 +68,24 @@ describe("runtime task continuation", () => {
     expect((await m.execute("task_get", { taskId: "1" })).content[0].text).toContain("Status: pending");
 
     await m.start();
-    await m.execute("task_update", { taskId: "1", status: "in_progress", owner: "lead" });
     await m.finish();
+    await vi.advanceTimersByTimeAsync(NUDGE_DELAY - 1);
+    expect(m.pi.sendMessage).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
     expect(m.pi.sendMessage).toHaveBeenCalledTimes(2);
+    await m.fire("input", { source: "extension" });
+    await m.fire("message_start", { message: { role: "user" } });
     await m.start();
-    await m.execute("task_done", { taskId: "1" });
     await m.finish();
-    expect(m.pi.sendMessage).toHaveBeenCalledTimes(3);
-    expect(m.pi.sendMessage.mock.lastCall?.[0].details).toEqual({ taskIds: ["2"] });
+    await vi.advanceTimersByTimeAsync(NUDGE_DELAY * 3);
+    expect(m.pi.sendMessage).toHaveBeenCalledTimes(2);
+
+    await m.fire("input", { source, text: "Continue" });
     await m.start();
-    await m.execute("task_done", { taskId: "2" });
     await m.finish();
+    await vi.advanceTimersByTimeAsync(NUDGE_DELAY);
     expect(m.pi.sendMessage).toHaveBeenCalledTimes(3);
+    expect((await m.execute("task_get", { taskId: "1" })).content[0].text).toContain("Status: pending");
   });
 
   it("does not wake an empty queue, but does wake an unfinished empty group", async () => {
@@ -79,6 +96,7 @@ describe("runtime task continuation", () => {
     await m.execute("task_create", { kind: "group", subject: "Project", description: "Needs children" });
     await m.start();
     await m.finish();
+    await vi.advanceTimersByTimeAsync(NUDGE_DELAY);
     expect(m.pi.sendMessage.mock.lastCall?.[0].details).toEqual({ taskIds: ["1"] });
   });
 
@@ -90,6 +108,7 @@ describe("runtime task continuation", () => {
     if (reason === "pending input") m.ctx.hasPendingMessages.mockReturnValue(true);
     if (reason === "shutdown") await m.fire("session_shutdown");
     await m.finish(reason === "aborted" || reason === "error" ? reason : "stop");
+    await vi.advanceTimersByTimeAsync(NUDGE_DELAY);
     expect(m.pi.sendMessage).not.toHaveBeenCalled();
   });
 
@@ -99,6 +118,7 @@ describe("runtime task continuation", () => {
     await m.start();
     m.controller.abort();
     await m.finish("toolUse");
+    await vi.advanceTimersByTimeAsync(NUDGE_DELAY);
     expect(m.pi.sendMessage).not.toHaveBeenCalled();
   });
 
@@ -117,10 +137,12 @@ describe("runtime task continuation", () => {
     await m.fire("tool_execution_start", { toolName: "ask_user", toolCallId: "q" });
     await m.fire("ui_prompt_start");
     await m.finish();
+    await vi.advanceTimersByTimeAsync(NUDGE_DELAY);
     expect(m.pi.sendMessage).not.toHaveBeenCalled();
     await m.fire("ui_prompt_end");
     expect(m.pi.sendMessage).not.toHaveBeenCalled();
     await m.fire("tool_execution_end", { toolName: "ask_user", toolCallId: "q", result: { details: { cancelled: true } } });
+    await vi.advanceTimersByTimeAsync(NUDGE_DELAY);
     expect(m.pi.sendMessage).toHaveBeenCalledTimes(1);
   });
 
@@ -132,6 +154,7 @@ describe("runtime task continuation", () => {
     });
     await m.start();
     await m.finish();
+    await vi.advanceTimersByTimeAsync(NUDGE_DELAY);
     expect(m.pi.events.emit).toHaveBeenCalledWith("pi-extended-teams:child-agent-lifecycle-probe", expect.objectContaining({ sessionId: "session-a" }));
     expect(m.pi.sendMessage).not.toHaveBeenCalled();
     m.pi.events.emit.mockImplementation((_name, probe) => {
@@ -139,6 +162,36 @@ describe("runtime task continuation", () => {
     });
     await m.start(); // The report delivery starts the next run.
     await m.finish();
+    await vi.advanceTimersByTimeAsync(NUDGE_DELAY);
+    expect(m.pi.sendMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["session_shutdown", "session_tree", "abort", "completed", "busy", "pending input"])("rechecks a pending reminder after %s", async (action) => {
+    const m = setup();
+    await m.execute("task_create", { subject: "Open", description: "Desc" });
+    await m.start();
+    await m.finish();
+    await vi.advanceTimersByTimeAsync(NUDGE_DELAY - 1);
+    if (action === "abort") m.controller.abort();
+    else if (action === "completed") await m.execute("task_done", { taskId: "1" });
+    else if (action === "busy") m.ctx.isIdle.mockReturnValue(false);
+    else if (action === "pending input") m.ctx.hasPendingMessages.mockReturnValue(true);
+    else await m.fire(action);
+    await vi.advanceTimersByTimeAsync(NUDGE_DELAY);
+    expect(m.pi.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it("restarts the idle delay when another run starts", async () => {
+    const m = setup();
+    await m.execute("task_create", { subject: "Open", description: "Desc" });
+    await m.start();
+    await m.finish();
+    await vi.advanceTimersByTimeAsync(NUDGE_DELAY - 1);
+    await m.start();
+    await vi.advanceTimersByTimeAsync(NUDGE_DELAY);
+    expect(m.pi.sendMessage).not.toHaveBeenCalled();
+    await m.finish();
+    await vi.advanceTimersByTimeAsync(NUDGE_DELAY);
     expect(m.pi.sendMessage).toHaveBeenCalledTimes(1);
   });
 
@@ -152,6 +205,7 @@ describe("runtime task continuation", () => {
     expect(m.pi.sendMessage).not.toHaveBeenCalled();
     await m.start();
     await m.finish();
+    await vi.advanceTimersByTimeAsync(NUDGE_DELAY);
     expect(m.pi.sendMessage).toHaveBeenCalledTimes(1);
   });
 });
