@@ -157,7 +157,7 @@ export class TaskWidget {
     const percentage = theme.fg("accent", `${progress.percent}%`).replace(
       /\x1b\[38;2;(\d+);(\d+);(\d+)m/g,
       (_match: string, red: string, green: string, blue: string) => {
-        const whiteAlpha = 0.2;
+        const whiteAlpha = 0.36;
         const channels = [red, green, blue].map(Number);
         const tintedRgb = channels.map(channel => Math.round(channel + (255 - channel) * whiteAlpha));
         return `\x1b[38;2;${tintedRgb.join(";")}m`;
