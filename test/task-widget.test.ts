@@ -62,6 +62,25 @@ describe("TaskWidget", () => {
     vi.useRealTimers();
   });
 
+  it("marks the waiting task without persisting a status and resumes its active display", () => {
+    const task = store.create("Review result", "Desc", "Reviewing");
+    store.update(task.id, { status: "in_progress", owner: "lead" });
+    store.create("Next task", "Desc");
+    widget.setActiveTask(task.id);
+    const before = JSON.stringify(store.list());
+
+    widget.setWaitingTask(task.id);
+    const lines = renderWidget(ui.state);
+    expect(lines.find(line => line.includes(`#${task.id} `))).toContain("(on wait) Review result");
+    expect(lines.filter(line => line.includes("(on wait)"))).toHaveLength(1);
+    expect(vi.getTimerCount()).toBe(0);
+    expect(JSON.stringify(store.list())).toBe(before);
+
+    widget.setWaitingTask(undefined);
+    expect(renderWidget(ui.state).find(line => line.includes(`#${task.id} `))).toContain("Reviewing…");
+    expect(vi.getTimerCount()).toBe(1);
+  });
+
   it("shows leaf progress and connectors alongside active direct subtasks", () => {
     const project = store.create("Project", "Desc", undefined, undefined, undefined, { kind: "group" });
     const first = store.create("First", "Desc", undefined, undefined, undefined, { parentId: project.id });

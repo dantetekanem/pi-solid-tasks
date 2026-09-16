@@ -71,6 +71,7 @@ export class TaskWidget {
   private widgetInterval: ReturnType<typeof setInterval> | undefined;
   /** IDs of tasks currently being actively executed (show spinner). */
   private activeTaskIds = new Set<string>();
+  private waitingTaskId: string | undefined;
   /** Per-task runtime metrics keyed by task ID. */
   private metrics = new Map<string, TaskMetrics>();
   /** Cached TUI instance for requestRender() calls. */
@@ -102,6 +103,11 @@ export class TaskWidget {
     } else if (taskId) {
       this.activeTaskIds.delete(taskId);
     }
+    this.update();
+  }
+
+  setWaitingTask(taskId: string | undefined) {
+    this.waitingTaskId = taskId;
     this.update();
   }
 
@@ -210,7 +216,8 @@ export class TaskWidget {
     }
     for (let i = 0; i < visible.length; i++) {
       const task = visible[i];
-      const isActive = this.activeTaskIds.has(task.id) && task.status === "in_progress";
+      const isWaiting = task.id === this.waitingTaskId && task.status === "in_progress";
+      const isActive = !isWaiting && this.activeTaskIds.has(task.id) && task.status === "in_progress";
 
       let icon: string;
       if (isActive) {
@@ -258,7 +265,8 @@ export class TaskWidget {
       } else if (task.status === "completed") {
         text = `  ${icon} ${theme.fg("dim", theme.strikethrough("#" + task.id + " " + task.subject))}`;
       } else {
-        text = `  ${icon} ${theme.fg("dim", "#" + task.id)} ${task.subject}`;
+        const waitLabel = isWaiting ? theme.fg("dim", "(on wait) ") : "";
+        text = `  ${icon} ${theme.fg("dim", "#" + task.id)} ${waitLabel}${task.subject}`;
       }
 
       lines.push(truncate("  " + (prefixes.get(task.id) ?? "") + text.slice(2) + suffix));
@@ -299,7 +307,9 @@ export class TaskWidget {
     }
 
     // Check if any task needs animation
-    const hasActiveSpinner = tasks.some(t => this.activeTaskIds.has(t.id) && t.status === "in_progress");
+    const hasActiveSpinner = tasks.some(t =>
+      t.id !== this.waitingTaskId && this.activeTaskIds.has(t.id) && t.status === "in_progress",
+    );
     if (hasActiveSpinner) {
       this.ensureTimer();
     } else if (!hasActiveSpinner && this.widgetInterval) {

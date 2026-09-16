@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.8.11
+
+### Added
+
+- `task_wait` pauses automatic continuation for a verified same-session scheduler wake or registered external review handoff, without changing task state.
+- Show `(on wait)` beside the waiting task in the footer list and pause its spinner until resumption.
+
+### Fixed
+
+- Handle review handoffs arriving before settlement or during wait reconciliation without stale recovery messages.
+
 ## 0.8.10
 
 ### Added

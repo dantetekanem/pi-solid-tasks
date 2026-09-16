@@ -1,19 +1,26 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { loadPrompt } from "./prompts.js";
 import type { TaskStore } from "./task-store.js";
+import { registerTaskWait } from "./task-wait.js";
 
 const CHILD_PROBE = "pi-extended-teams:child-agent-lifecycle-probe";
 const QUESTION_TOOLS = new Set(["ask_user", "ask_user_batch"]);
 
-export function registerTaskContinuation(pi: ExtensionAPI, getStore: () => TaskStore): void {
+export function registerTaskContinuation(
+  pi: ExtensionAPI,
+  getStore: () => TaskStore,
+  onWaitChanged?: (taskId: string | undefined) => void,
+): void {
   let armed = false;
   let settled = false;
   let uiPromptOpen = false;
   let stopReason: string | undefined;
   let runSignal: AbortSignal | undefined;
   const openQuestions = new Set<string>();
+  const wait = registerTaskWait(pi, getStore, continueIfIdle, onWaitChanged);
 
-  function reset() {
+  function reset(_event: unknown, ctx: ExtensionContext) {
+    wait.clear(ctx);
     armed = settled = uiPromptOpen = false;
     stopReason = undefined;
     runSignal = undefined;
@@ -24,9 +31,13 @@ export function registerTaskContinuation(pi: ExtensionAPI, getStore: () => TaskS
     if (!armed || !settled || !ctx.isIdle() || ctx.hasPendingMessages()) return;
     if (!stopReason || runSignal?.aborted || stopReason === "aborted" || stopReason === "error") {
       armed = false;
+      wait.clear(ctx);
       return;
     }
     if (uiPromptOpen || openQuestions.size > 0) return;
+    if (wait.isWaiting(ctx)) return;
+    // Reconciliation can synchronously submit a producer handoff and start another run.
+    if (!armed || !settled || !ctx.isIdle() || ctx.hasPendingMessages()) return;
     const unfinished = getStore().list().filter(task => task.status !== "completed");
     if (!unfinished.length) {
       armed = false;
@@ -62,11 +73,17 @@ export function registerTaskContinuation(pi: ExtensionAPI, getStore: () => TaskS
 
   pi.on("session_start", reset);
   pi.on("session_shutdown", reset);
-  pi.on("agent_start", () => {
+  pi.on("session_tree", reset);
+  pi.on("agent_start", (_event, ctx) => {
+    wait.clear(ctx);
     armed = true;
     settled = false;
     stopReason = undefined;
     runSignal = undefined;
+  });
+  pi.on("input", (_event, ctx) => { wait.clear(ctx); });
+  pi.on("message_start", (event, ctx) => {
+    if (event.message.role === "user") wait.clear(ctx);
   });
   pi.on("turn_start", (_event, ctx) => { runSignal = ctx.signal ?? runSignal; });
   pi.on("turn_end", (event, ctx) => {

@@ -9,6 +9,7 @@
  *   task_list     — List all tasks with status
  *   task_get      — Get full task details
  *   task_update   — Update task fields, status, dependencies
+ *   task_wait     — Yield continuation for a verified scheduler-backed external wait
  *   task_done     — Complete one task and return the next ready task
  *   tasks_done    — Clear the fully completed task list
  *   task_output   — Get output from a background task process
@@ -67,7 +68,7 @@ function draftTaskKickoffPrompt(taskId: string, rawTask: string): string {
 }
 
 /** Task tool names — used to detect task tool usage for reminder suppression. */
-const TASK_TOOL_NAMES = new Set(["task_create", "task_append", "task_prepend", "tasks_create_in_batch", "task_list", "task_get", "task_update", "task_done", "tasks_done", "task_output", "task_stop"]);
+const TASK_TOOL_NAMES = new Set(["task_create", "task_append", "task_prepend", "tasks_create_in_batch", "task_list", "task_get", "task_update", "task_wait", "task_done", "tasks_done", "task_output", "task_stop"]);
 
 /** How many turns without task tool usage before injecting a reminder. */
 const REMINDER_INTERVAL = 4;
@@ -120,7 +121,7 @@ export default function (pi: ExtensionAPI) {
   let store = new TaskStore(resolveStorePath());
   const tracker = new ProcessTracker();
   const widget = new TaskWidget(store, cfg);
-  registerTaskContinuation(pi, () => store);
+  registerTaskContinuation(pi, () => store, taskId => widget.setWaitingTask(taskId));
 
   const autoClear = new AutoClearManager(() => store, () => cfg.autoClearCompleted ?? "on_list_complete", AUTO_CLEAR_DELAY);
 
