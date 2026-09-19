@@ -38,13 +38,6 @@ const MAX_VISIBLE_TASK_ROWS = 5;
 const MAX_VISIBLE_SUBTASKS = 2;
 const MAX_VISIBLE_COMPLETED_TASKS = 2;
 
-/** Per-task runtime metrics (elapsed time, token usage). */
-export interface TaskMetrics {
-  startedAt: number;
-  inputTokens: number;
-  outputTokens: number;
-}
-
 /** Format milliseconds as a human-readable duration (e.g., "2m 49s", "1h 3m"). */
 function formatDuration(ms: number): string {
   const totalSec = Math.floor(ms / 1000);
@@ -57,12 +50,6 @@ function formatDuration(ms: number): string {
   return remMin > 0 ? `${hr}h ${remMin}m` : `${hr}h`;
 }
 
-/** Format token count with k suffix (e.g., "4.1k", "850"). */
-function formatTokens(n: number): string {
-  if (n < 1000) return String(n);
-  return (n / 1000).toFixed(1).replace(/\.0$/, "") + "k";
-}
-
 // ---- Widget ----
 
 export class TaskWidget {
@@ -72,8 +59,7 @@ export class TaskWidget {
   /** IDs of tasks currently being actively executed (show spinner). */
   private activeTaskIds = new Set<string>();
   private waitingTaskId: string | undefined;
-  /** Per-task runtime metrics keyed by task ID. */
-  private metrics = new Map<string, TaskMetrics>();
+  private startedAtByTask = new Map<string, number>();
   /** Cached TUI instance for requestRender() calls. */
   private tui: any | undefined;
   /** Whether the widget callback is currently registered. */
@@ -96,8 +82,8 @@ export class TaskWidget {
   setActiveTask(taskId: string | undefined, active = true) {
     if (taskId && active) {
       this.activeTaskIds.add(taskId);
-      if (!this.metrics.has(taskId)) {
-        this.metrics.set(taskId, { startedAt: Date.now(), inputTokens: 0, outputTokens: 0 });
+      if (!this.startedAtByTask.has(taskId)) {
+        this.startedAtByTask.set(taskId, Date.now());
       }
       this.ensureTimer();
     } else if (taskId) {
@@ -109,18 +95,6 @@ export class TaskWidget {
   setWaitingTask(taskId: string | undefined) {
     this.waitingTaskId = taskId;
     this.update();
-  }
-
-  /** Record token usage for the currently active task(s). */
-  addTokenUsage(inputTokens: number, outputTokens: number) {
-    // Distribute to all currently active tasks
-    for (const id of this.activeTaskIds) {
-      const m = this.metrics.get(id);
-      if (m) {
-        m.inputTokens += inputTokens;
-        m.outputTokens += outputTokens;
-      }
-    }
   }
 
   /** Ensure the widget update timer is running. */
@@ -239,16 +213,11 @@ export class TaskWidget {
           : `  ${icon} ${theme.fg("dim", "#" + task.id)} ${theme.bold(summary)} ${task.subject}`;
       } else if (isActive) {
         const form = task.activeForm || task.subject;
-        const m = this.metrics.get(task.id);
+        const startedAt = this.startedAtByTask.get(task.id);
         let stats = "";
-        if (m) {
-          const elapsed = formatDuration(Date.now() - m.startedAt);
-          const tokenParts: string[] = [];
-          if (m.inputTokens > 0) tokenParts.push(`↑ ${formatTokens(m.inputTokens)}`);
-          if (m.outputTokens > 0) tokenParts.push(`↓ ${formatTokens(m.outputTokens)}`);
-          stats = tokenParts.length > 0
-            ? ` ${theme.fg("dim", `(${elapsed} · ${tokenParts.join(" ")})`)}`
-            : ` ${theme.fg("dim", `(${elapsed})`)}`;
+        if (startedAt !== undefined) {
+          const elapsed = formatDuration(Date.now() - startedAt);
+          stats = ` ${theme.fg("dim", `(${elapsed})`)}`;
         }
         text = `  ${icon} ${theme.fg("dim", "#" + task.id)} ${theme.fg("accent", form + "…")}${stats}`;
       } else if (task.status === "completed") {
@@ -291,7 +260,7 @@ export class TaskWidget {
       const t = this.store.get(id);
       if (!t || t.status !== "in_progress") {
         this.activeTaskIds.delete(id);
-        this.metrics.delete(id);
+        this.startedAtByTask.delete(id);
       }
     }
 

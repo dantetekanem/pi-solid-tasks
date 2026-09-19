@@ -187,15 +187,6 @@ export default function (pi: ExtensionAPI) {
     if (autoClear.onTurnStart(cadence.currentTurn)) widget.update();
   });
 
-  // ── Token usage tracking ──
-  // Feed per-turn token counts from assistant messages into the widget.
-  pi.on("turn_end", async (event) => {
-    const msg = event.message as any;
-    if (msg?.role === "assistant" && msg.usage) {
-      widget.addTokenUsage(msg.usage.input ?? 0, msg.usage.output ?? 0);
-    }
-  });
-
   // ── System-reminder injection ──
   //
   // tool_result is used ONLY to track cadence. We DO NOT mutate non-task

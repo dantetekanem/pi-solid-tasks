@@ -477,20 +477,6 @@ describe("TaskWidget", () => {
     expect(lines[5]).toContain("#4 Pending 4");
   });
 
-  it("tracks token usage for active tasks", () => {
-    store.create("Active task", "Desc", "Running");
-    store.update("1", { status: "in_progress" });
-    widget.setActiveTask("1", true);
-
-    widget.addTokenUsage(1000, 500);
-    widget.addTokenUsage(500, 300);
-
-    const lines = renderWidget(ui.state);
-    const activeLine = lines.find(l => l.includes("Running…"));
-    expect(activeLine).toContain("↑ 1.5k");
-    expect(activeLine).toContain("↓ 800");
-  });
-
   it("deactivates a task with setActiveTask(id, false)", () => {
     store.create("Task", "Desc", "Doing work");
     store.update("1", { status: "in_progress" });
@@ -554,26 +540,6 @@ describe("TaskWidget", () => {
     expect(lines[4]).toContain("1 hidden (1 in progress)");
   });
 
-  it("distributes token usage across all active tasks", () => {
-    store.create("Task A", "Desc", "A");
-    store.create("Task B", "Desc", "B");
-    store.update("1", { status: "in_progress", owner: "worker-a" });
-    store.update("2", { status: "in_progress", owner: "worker-b" });
-    widget.setActiveTask("1", true);
-    widget.setActiveTask("2", true);
-
-    widget.addTokenUsage(100, 50);
-
-    let lines = renderWidget(ui.state);
-    expect(lines.find(l => l.includes("A…"))).toContain("↑ 100");
-    expect(lines.find(l => l.includes("B…"))).toContain("↑ 100");
-
-    store.update("1", { status: "completed" });
-    widget.update();
-    lines = renderWidget(ui.state);
-    expect(lines.find(l => l.includes("B…"))).toContain("↑ 100");
-  });
-
   it("dispose clears widget and timer", () => {
     store.create("Task", "Desc");
     store.update("1", { status: "in_progress" });
@@ -592,40 +558,17 @@ describe("TaskWidget", () => {
     expect(lines[1]).toContain("My Subject…");
   });
 
-  it("shows elapsed time but no token arrows when tokens are zero", () => {
-    store.create("No tokens", "Desc", "Working");
+  it("shows elapsed time for active tasks", () => {
+    store.create("Task", "Desc", "Working");
     store.update("1", { status: "in_progress" });
     widget.setActiveTask("1", true);
 
-    // No addTokenUsage calls — tokens stay at 0
     vi.advanceTimersByTime(5000);
     widget.update();
 
     const lines = renderWidget(ui.state);
     const activeLine = lines.find(l => l.includes("Working…"));
     expect(activeLine).toContain("5s");
-    expect(activeLine).not.toContain("↑");
-    expect(activeLine).not.toContain("↓");
-  });
-
-  it("cleans up metrics when stale active IDs are pruned", () => {
-    store.create("Task", "Desc", "Running");
-    store.update("1", { status: "in_progress" });
-    widget.setActiveTask("1", true);
-    widget.addTokenUsage(100, 50);
-
-    // Delete task externally
-    store.update("1", { status: "deleted" });
-    widget.update();
-
-    // Reactivate with same ID (new task) — should get fresh metrics
-    store.create("Task 2", "Desc", "Running");  // ID 2
-    store.update("2", { status: "in_progress" });
-    widget.setActiveTask("2", true);
-
-    const lines = renderWidget(ui.state);
-    // Should not carry over old tokens
-    expect(lines[1]).not.toContain("↑ 100");
   });
 
   it("indents task lines under header", () => {
@@ -710,31 +653,5 @@ describe("formatDuration (via widget rendering)", () => {
 
     const lines = renderWidget(ui.state);
     expect(lines[1]).toContain("2m 49s");
-  });
-
-  it("formats small token counts without k suffix", () => {
-    store.create("Small", "Desc", "Working");
-    store.update("1", { status: "in_progress" });
-    widget.setActiveTask("1", true);
-
-    widget.addTokenUsage(500, 200);
-    widget.update();
-
-    const lines = renderWidget(ui.state);
-    expect(lines[1]).toContain("↑ 500");
-    expect(lines[1]).toContain("↓ 200");
-  });
-
-  it("formats token counts with k suffix and removes .0", () => {
-    store.create("Large", "Desc", "Working");
-    store.update("1", { status: "in_progress" });
-    widget.setActiveTask("1", true);
-
-    widget.addTokenUsage(2000, 4100);
-    widget.update();
-
-    const lines = renderWidget(ui.state);
-    expect(lines[1]).toContain("↑ 2k");    // 2000 → "2k" (not "2.0k")
-    expect(lines[1]).toContain("↓ 4.1k");  // 4100 → "4.1k"
   });
 });
