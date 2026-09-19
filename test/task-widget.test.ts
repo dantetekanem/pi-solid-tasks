@@ -255,43 +255,6 @@ describe("TaskWidget", () => {
     expect(lines[1]).not.toContain("◼");
   });
 
-  it("shows blocked-by info for pending tasks", () => {
-    store.create("Blocker", "Desc");
-    store.create("Blocked", "Desc");
-    store.update("2", { addBlockedBy: ["1"] });
-    widget.update();
-
-    const lines = renderWidget(ui.state);
-    const blockedLine = lines.find(l => l.includes("Blocked"));
-    expect(blockedLine).toContain("blocked by #1");
-  });
-
-  it("shows only immediate blockers when another direct edge is transitively redundant", () => {
-    store.create("Root", "Desc");
-    store.create("Middle", "Desc");
-    store.create("Dependent", "Desc");
-    store.update("2", { addBlockedBy: ["1"] });
-    store.update("3", { addBlockedBy: ["1", "2"] });
-    widget.update();
-
-    const lines = renderWidget(ui.state);
-    const dependentLine = lines.find(line => line.includes("Dependent"));
-    expect(dependentLine).toContain("blocked by #2");
-    expect(dependentLine).not.toContain("#1");
-  });
-
-  it("hides completed blockers in blocked-by suffix", () => {
-    store.create("Blocker", "Desc");
-    store.create("Blocked", "Desc");
-    store.update("2", { addBlockedBy: ["1"] });
-    store.update("1", { status: "completed" });
-    widget.update();
-
-    const lines = renderWidget(ui.state);
-    const blockedLine = lines.find(l => l.includes("Blocked"));
-    expect(blockedLine).not.toContain("blocked by");
-  });
-
   it("shows status summary in header", () => {
     store.create("Task A", "Desc");
     store.create("Task B", "Desc");

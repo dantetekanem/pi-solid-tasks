@@ -230,17 +230,6 @@ export class TaskWidget {
         icon = "◻";
       }
 
-      let suffix = "";
-      if (task.status === "pending" && task.blockedBy.length > 0) {
-        const openBlockers = task.blockedBy.filter(bid => {
-          const blocker = this.store.get(bid);
-          return blocker && blocker.status !== "completed";
-        });
-        if (openBlockers.length > 0) {
-          suffix = theme.fg("dim", ` › blocked by ${openBlockers.map(id => "#" + id).join(", ")}`);
-        }
-      }
-
       let text: string;
       if (task.kind === "group") {
         const progress = taskProgress(allTasks, task.id);
@@ -269,7 +258,7 @@ export class TaskWidget {
         text = `  ${icon} ${theme.fg("dim", "#" + task.id)} ${waitLabel}${task.subject}`;
       }
 
-      lines.push(truncate("  " + (prefixes.get(task.id) ?? "") + text.slice(2) + suffix));
+      lines.push(truncate("  " + (prefixes.get(task.id) ?? "") + text.slice(2)));
     }
 
     if (overflowLine && hiddenAt !== "top") {
