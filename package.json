@@ -1,14 +1,20 @@
 {
   "name": "pi-solid-tasks",
-  "version": "0.8.12",
-  "private": true,
-  "description": "Strict task tracking and coordination for pi.",
+  "version": "0.8.13",
+  "description": "Task tracking for Pi with dependencies, ownership, subtasks, and progress.",
   "author": "Leonardo Pereira",
   "license": "MIT",
   "repository": {
     "type": "git",
     "url": "https://github.com/dantetekanem/pi-solid-tasks.git"
   },
+  "files": [
+    "src/",
+    "prompts/",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
   "keywords": [
     "pi-package",
     "pi",

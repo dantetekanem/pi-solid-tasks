@@ -80,6 +80,52 @@ describe("session-scoped storage", () => {
     fs.rmSync(tasksDir, { recursive: true, force: true });
   });
 
+  it("restores the active task spinner after reloading the extension", async () => {
+    vi.useFakeTimers();
+    const original = mockPi();
+    const reloaded = mockPi();
+    const ctx = mockCtx();
+    initExtension(original.pi as any);
+    try {
+      await original.fireLifecycle("session_start", { reason: "startup" }, ctx);
+      await original.executeTool("tasks_create_in_batch", { tasks: [
+        { subject: "Finished", description: "Done" },
+        { subject: "Current", description: "In progress", activeForm: "Working" },
+        { subject: "Next", description: "Pending" },
+      ] });
+      await original.executeTool("task_done", { taskId: "1" });
+      await original.executeTool("task_update", { taskId: "2", status: "in_progress", owner: "lead" });
+      await original.fireLifecycle("session_shutdown", { reason: "reload" }, ctx);
+
+      ctx.ui.setWidget.mockClear();
+      initExtension(reloaded.pi as any);
+      await reloaded.fireLifecycle("session_start", { reason: "reload" }, ctx);
+      const factory = ctx.ui.setWidget.mock.calls.find(
+        ([key, content]) => key === "tasks" && typeof content === "function",
+      )?.[1];
+      expect(factory).toBeTypeOf("function");
+      const tui = { terminal: { columns: 100 }, requestRender: vi.fn() };
+      const component = factory(tui, {
+        fg: (_color: string, text: string) => text,
+        bold: (text: string) => text,
+        strikethrough: (text: string) => text,
+      });
+      const before = component.render();
+      expect(before[1]).toContain("✔ #1 Finished");
+      expect(before[2]).toMatch(/[✳-✽] #2 Working…/);
+      expect(before[3]).toContain("◻ #3 Next");
+
+      vi.advanceTimersByTime(150);
+      expect(tui.requestRender).toHaveBeenCalled();
+      expect(component.render()[2]).not.toBe(before[2]);
+    } finally {
+      await original.fireLifecycle("session_shutdown", { reason: "quit" }, ctx);
+      await reloaded.fireLifecycle("session_shutdown", { reason: "quit" }, ctx);
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
   it("stores each Pi session in its own folder", async () => {
     const fs = await import("node:fs");
     const path = await import("node:path");

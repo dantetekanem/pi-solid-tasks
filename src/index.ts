@@ -166,6 +166,11 @@ export default function (pi: ExtensionAPI) {
         store.clearCompleted();
         if (taskScope === "session") store.deleteFileIfEmpty();
       } else {
+        for (const task of tasks) {
+          if (task.kind !== "group" && task.status === "in_progress") {
+            widget.setActiveTask(task.id);
+          }
+        }
         widget.update();
       }
     }
