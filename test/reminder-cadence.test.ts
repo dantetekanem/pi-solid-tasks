@@ -3,8 +3,8 @@ import { beforeEach, describe, expect, it } from "vitest";
 import {
   type CadenceConfig,
   type CadenceState,
+  consumeReminderDue,
   createCadenceState,
-  drainReminderForContext,
   evaluateToolResult,
   onTurnStart,
   resetCadenceState,
@@ -37,7 +37,7 @@ describe("reminder cadence (pure)", () => {
 
   it("starts with reminder not due", () => {
     expect(state.reminderDue).toBe(false);
-    expect(drainReminderForContext(state)).toBe(false);
+    expect(consumeReminderDue(state)).toBe(false);
   });
 
   it("marks reminder due after REMINDER_INTERVAL non-task turns when tasks exist", () => {
@@ -76,9 +76,9 @@ describe("reminder cadence (pure)", () => {
   it("does not re-fire within the same injection cycle", () => {
     advanceTurns(5);
     evaluateToolResult(state, "read", true, config);
-    expect(drainReminderForContext(state)).toBe(true);
+    expect(consumeReminderDue(state)).toBe(true);
 
-    // Reminder injected this cycle — further non-task tool results should
+    // Reminder delivered this cycle — further non-task tool results should
     // not re-queue it until a task tool usage resets cadence.
     advanceTurns(10);
     const decision = evaluateToolResult(state, "bash", true, config);
@@ -89,7 +89,7 @@ describe("reminder cadence (pure)", () => {
   it("re-arms after a task tool usage resets the cycle", () => {
     advanceTurns(5);
     evaluateToolResult(state, "read", true, config);
-    drainReminderForContext(state);
+    consumeReminderDue(state);
 
     // Use a task tool to reset.
     evaluateToolResult(state, "task_update", true, config);
@@ -101,18 +101,18 @@ describe("reminder cadence (pure)", () => {
     expect(decision.markDue).toBe(true);
   });
 
-  it("drainReminderForContext is a one-shot (only fires once per cycle)", () => {
+  it("consumeReminderDue is a one-shot (only fires once per cycle)", () => {
     advanceTurns(5);
     evaluateToolResult(state, "read", true, config);
 
-    expect(drainReminderForContext(state)).toBe(true);
-    expect(drainReminderForContext(state)).toBe(false);
+    expect(consumeReminderDue(state)).toBe(true);
+    expect(consumeReminderDue(state)).toBe(false);
   });
 
   it("resetCadenceState wipes everything", () => {
     advanceTurns(20);
     evaluateToolResult(state, "read", true, config);
-    drainReminderForContext(state);
+    consumeReminderDue(state);
 
     resetCadenceState(state);
     expect(state).toEqual({

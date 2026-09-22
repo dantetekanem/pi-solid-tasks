@@ -1,9 +1,9 @@
 /**
- * Pure cadence logic for the system-reminder injection.
+ * Pure cadence logic for system-reminder delivery.
  *
  * Decisions are made here as plain functions so they're easy to unit-test
  * without spinning up the whole extension. The default export of the
- * extension wires these into the `tool_result` and `context` hooks.
+ * extension wires these into the `tool_result` and `turn_end` hooks.
  */
 
 /** Internal cadence state. Plain object so it round-trips through tests. */
@@ -43,7 +43,7 @@ export function onTurnStart(state: CadenceState): void {
 }
 
 export interface ToolResultDecision {
-  /** True when caller should mark `reminderDue` for the next `context` event. */
+  /** True when caller should mark `reminderDue` for the next eligible batch end. */
   markDue: boolean;
 }
 
@@ -78,10 +78,9 @@ export function evaluateToolResult(
 }
 
 /**
- * Drain the pending reminder when `context` fires. Returns true if the
- * caller should inject the reminder into the upcoming LLM call's messages.
+ * Consume a pending reminder when its tool batch can continue to another request.
  */
-export function drainReminderForContext(state: CadenceState): boolean {
+export function consumeReminderDue(state: CadenceState): boolean {
   if (!state.reminderDue) return false;
   state.reminderDue = false;
   state.reminderInjectedThisCycle = true;

@@ -1,6 +1,6 @@
 {
   "name": "pi-solid-tasks",
-  "version": "0.8.14",
+  "version": "0.8.15",
   "description": "Task tracking for Pi with dependencies, ownership, subtasks, and progress.",
   "author": "Leonardo Pereira",
   "license": "MIT",

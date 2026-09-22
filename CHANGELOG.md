@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.8.15
+
+### Fixed
+
+- Save the four-turn task reminder as a hidden session message, so later requests replay it in the same place. Anthropic no longer drops thinking blocks with `prefix_binding_mismatch` after a reminder.
+- Send the reminder after the whole tool batch. Skip it when every tool in the batch ends the run, and do not send it again after a session reload.
+
 ## 0.8.12
 
 ### Fixed

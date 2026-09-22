@@ -19,7 +19,7 @@ function setup() {
   const controller = new AbortController();
   const ctx = {
     isIdle: vi.fn(() => true), hasPendingMessages: vi.fn(() => false), signal: controller.signal,
-    sessionManager: { getSessionId: () => "session-a" },
+    sessionManager: { getSessionId: () => "session-a", getBranch: () => [] },
     ui: { setWidget: vi.fn(), setStatus: vi.fn(), notify: vi.fn() },
     abort: vi.fn(async () => { controller.abort(); }),
   };
