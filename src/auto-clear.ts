@@ -8,6 +8,7 @@
  * Both use the same turn delay (REMINDER_INTERVAL) for consistency.
  */
 
+import { hasHierarchy } from "./task-hierarchy.js";
 import type { TaskStore } from "./task-store.js";
 
 export type AutoClearMode = "never" | "on_list_complete" | "on_task_complete";
@@ -40,7 +41,9 @@ export class AutoClearManager {
   /** Check if all tasks are completed and start/reset the batch countdown. */
   private checkAllCompleted(currentTurn: number): void {
     const tasks = this.getStore().list();
-    if (tasks.length > 0 && tasks.every(t => t.status === "completed")) {
+    if (hasHierarchy(tasks)) {
+      this.allCompletedAtTurn = null;
+    } else if (tasks.length > 0 && tasks.every(t => t.status === "completed")) {
       if (this.allCompletedAtTurn === null) this.allCompletedAtTurn = currentTurn;
     } else {
       this.allCompletedAtTurn = null;
@@ -65,22 +68,28 @@ export class AutoClearManager {
   onTurnStart(currentTurn: number): boolean {
     const mode = this.getMode();
     let cleared = false;
+    const store = this.getStore();
+    if (hasHierarchy(store.list())) {
+      this.completedAtTurn.clear();
+      this.allCompletedAtTurn = null;
+      return false;
+    }
 
     if (mode === "on_task_complete") {
       for (const [taskId, turn] of this.completedAtTurn) {
-        const task = this.getStore().get(taskId);
-        if (!task || task.status !== "completed") {
+        const task = store.get(taskId);
+        if (task?.status !== "completed") {
           // Task was deleted or reverted — drop stale tracking entry
           this.completedAtTurn.delete(taskId);
         } else if (currentTurn - turn >= this.clearDelayTurns) {
-          this.getStore().delete(taskId);
+          store.delete(taskId);
           this.completedAtTurn.delete(taskId);
           cleared = true;
         }
       }
     } else if (mode === "on_list_complete" && this.allCompletedAtTurn !== null) {
       if (currentTurn - this.allCompletedAtTurn >= this.clearDelayTurns) {
-        this.getStore().clearCompleted();
+        store.clearCompleted();
         this.allCompletedAtTurn = null;
         cleared = true;
       }

@@ -1,0 +1,5 @@
+- Retrieves output from a running or completed background process
+- Takes a task_id parameter identifying the task
+- Returns the process output and status
+- Use block=true (default) to wait for completion
+- Use block=false for a non-blocking check

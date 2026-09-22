@@ -3,6 +3,7 @@
  */
 
 export type TaskStatus = "pending" | "in_progress" | "completed";
+export type TaskKind = "task" | "group";
 
 export type TaskCreatePosition =
   | { type: "beginning" }
@@ -10,12 +11,30 @@ export type TaskCreatePosition =
   | { type: "before"; taskId: string }
   | { type: "after"; taskId: string };
 
+export interface TaskCreateOptions {
+  kind?: TaskKind;
+  parentId?: string;
+}
+
+export interface TaskBatchLeaf {
+  subject: string;
+  description: string;
+  activeForm?: string;
+  metadata?: Record<string, any>;
+}
+
+export interface TaskBatchItem extends TaskBatchLeaf, TaskCreateOptions {
+  children?: TaskBatchLeaf[];
+}
+
 export interface Task {
   id: string;
   subject: string;
   description: string;
   status: TaskStatus;
   order: number;
+  kind?: TaskKind;
+  parentId?: string;
   activeForm?: string;
   owner?: string;
   metadata: Record<string, any>;

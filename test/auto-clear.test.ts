@@ -214,6 +214,33 @@ describe("auto-clear: never mode", () => {
   });
 });
 
+describe("auto-clear hierarchy retention", () => {
+  it("does not auto-clear completed leaves or a completed project", () => {
+    const store = new TaskStore();
+    const manager = new AutoClearManager(() => store, () => "on_task_complete");
+    const project = store.create("Project", "Desc", undefined, undefined, undefined, { kind: "group" });
+    const leaf = store.create("Leaf", "Desc", undefined, undefined, undefined, { parentId: project.id });
+    store.update(leaf.id, { status: "completed" });
+    manager.trackCompletion(leaf.id, 1);
+
+    expect(manager.onTurnStart(5)).toBe(false);
+    expect(store.list()).toHaveLength(2);
+    expect(store.get(project.id)!.status).toBe("completed");
+  });
+
+  it("does not batch-clear a completed hierarchy", () => {
+    const store = new TaskStore();
+    const manager = new AutoClearManager(() => store, () => "on_list_complete");
+    const project = store.create("Project", "Desc", undefined, undefined, undefined, { kind: "group" });
+    const leaf = store.create("Leaf", "Desc", undefined, undefined, undefined, { parentId: project.id });
+    store.update(leaf.id, { status: "completed" });
+    manager.trackCompletion(leaf.id, 1);
+
+    expect(manager.onTurnStart(5)).toBe(false);
+    expect(store.list()).toHaveLength(2);
+  });
+});
+
 describe("auto-clear: dynamic mode switching", () => {
   it("respects mode changes via getMode callback", () => {
     const store = new TaskStore();

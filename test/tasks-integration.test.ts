@@ -9,7 +9,7 @@ function mockCtx() {
   return {
     model: { id: "test-model", name: "Test" },
     modelRegistry: {},
-    sessionManager: { getSessionId: () => "test-session" },
+    sessionManager: { getSessionId: () => "test-session", getBranch: () => [] },
     ui: {
       setWidget: vi.fn(),
       setStatus: vi.fn(),
@@ -43,6 +43,7 @@ function mockPi() {
       },
     },
     sendUserMessage: vi.fn(),
+    sendMessage: vi.fn(),
   };
 
   return {
@@ -55,7 +56,12 @@ function mockPi() {
       return tool.execute("call-1", params, undefined, undefined, ctx);
     },
     async fireLifecycle(event: string, ...args: any[]) {
-      for (const handler of lifecycleHandlers.get(event) ?? []) await handler(...args);
+      let result: any;
+      const eventArgs = event === "turn_end"
+        ? [{ message: { role: "assistant", stopReason: "toolUse" }, ...args[0] }, ...args.slice(1)]
+        : args;
+      for (const handler of lifecycleHandlers.get(event) ?? []) result = await handler(...eventArgs);
+      return result;
     },
   };
 }
@@ -78,6 +84,52 @@ describe("session-scoped storage", () => {
     fs.rmSync(tasksDir, { recursive: true, force: true });
   });
 
+  it("restores the active task spinner after reloading the extension", async () => {
+    vi.useFakeTimers();
+    const original = mockPi();
+    const reloaded = mockPi();
+    const ctx = mockCtx();
+    initExtension(original.pi as any);
+    try {
+      await original.fireLifecycle("session_start", { reason: "startup" }, ctx);
+      await original.executeTool("tasks_create_in_batch", { tasks: [
+        { subject: "Finished", description: "Done" },
+        { subject: "Current", description: "In progress", activeForm: "Working" },
+        { subject: "Next", description: "Pending" },
+      ] });
+      await original.executeTool("task_done", { taskId: "1" });
+      await original.executeTool("task_update", { taskId: "2", status: "in_progress", owner: "lead" });
+      await original.fireLifecycle("session_shutdown", { reason: "reload" }, ctx);
+
+      ctx.ui.setWidget.mockClear();
+      initExtension(reloaded.pi as any);
+      await reloaded.fireLifecycle("session_start", { reason: "reload" }, ctx);
+      const factory = ctx.ui.setWidget.mock.calls.find(
+        ([key, content]) => key === "tasks" && typeof content === "function",
+      )?.[1];
+      expect(factory).toBeTypeOf("function");
+      const tui = { terminal: { columns: 100 }, requestRender: vi.fn() };
+      const component = factory(tui, {
+        fg: (_color: string, text: string) => text,
+        bold: (text: string) => text,
+        strikethrough: (text: string) => text,
+      });
+      const before = component.render();
+      expect(before[1]).toContain("✔ #1 Finished");
+      expect(before[2]).toMatch(/[✳-✽] #2 Working…/);
+      expect(before[3]).toContain("◻ #3 Next");
+
+      vi.advanceTimersByTime(150);
+      expect(tui.requestRender).toHaveBeenCalled();
+      expect(component.render()[2]).not.toBe(before[2]);
+    } finally {
+      await original.fireLifecycle("session_shutdown", { reason: "quit" }, ctx);
+      await reloaded.fireLifecycle("session_shutdown", { reason: "quit" }, ctx);
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
   it("stores each Pi session in its own folder", async () => {
     const fs = await import("node:fs");
     const path = await import("node:path");
@@ -86,13 +138,13 @@ describe("session-scoped storage", () => {
 
     await mock.fireLifecycle("session_start", { reason: "startup" }, {
       ...mockCtx(),
-      sessionManager: { getSessionId: () => "session-a" },
+      sessionManager: { getSessionId: () => "session-a", getBranch: () => [] },
     });
     await mock.executeTool("task_create", { subject: "A", description: "Task A" });
 
     await mock.fireLifecycle("session_start", { reason: "new" }, {
       ...mockCtx(),
-      sessionManager: { getSessionId: () => "session-b" },
+      sessionManager: { getSessionId: () => "session-b", getBranch: () => [] },
     });
     await mock.executeTool("task_create", { subject: "B", description: "Task B" });
 
@@ -127,11 +179,328 @@ describe("/add-task", () => {
   });
 });
 
+describe("relative task creation tools", () => {
+  it.each(["task_append", "task_prepend"])("%s creates a new task beside a blocked anchor and returns the sorted queue", async (name) => {
+    const mock = mockPi();
+    initExtension(mock.pi as any);
+    await mock.executeTool("tasks_create_in_batch", { tasks: [
+      { subject: "Dependent", description: "Desc" },
+      { subject: "Blocker", description: "Desc" },
+    ] });
+    await mock.executeTool("task_update", { taskId: "1", addBlockedBy: ["2"] });
+
+    const result = await mock.executeTool(name, {
+      taskId: "1", subject: "Inserted", description: "Acceptance",
+      activeForm: "Inserting", metadata: { area: "core" },
+    });
+
+    const queue = name === "task_append" ? ["2", "1", "3"] : ["2", "3", "1"];
+    expect(result.details.task).toMatchObject({
+      id: "3", subject: "Inserted", description: "Acceptance", status: "pending",
+      activeForm: "Inserting", metadata: { area: "core" }, blocks: [], blockedBy: [],
+    });
+    expect(result.details.queue).toEqual(queue);
+    const list: string = (await mock.executeTool("task_list", {})).content[0].text;
+    expect([...list.matchAll(/^#(\d+)/gm)].map(match => match[1])).toEqual(queue);
+    await mock.executeTool("task_update", { taskId: "2", status: "in_progress", owner: "lead" });
+    expect((await mock.executeTool("task_done", { taskId: "2" })).details.nextTask.id).toBe(queue[1]);
+  });
+
+  it.each(["task_append", "task_prepend"])("%s rejects invalid anchors and parents without consuming an ID", async (name) => {
+    const mock = mockPi();
+    initExtension(mock.pi as any);
+    await mock.executeTool("task_create", { subject: "History", description: "Desc" });
+    await mock.executeTool("task_done", { taskId: "1" });
+    for (const taskId of ["999", "1"]) {
+      await expect(mock.executeTool(name, { taskId, subject: "Invalid", description: "Desc" })).rejects.toThrow(/not found|completed/);
+    }
+    await mock.executeTool("task_create", { kind: "group", subject: "Project", description: "Desc" });
+    await expect(mock.executeTool(name, { taskId: "2", parentId: "999", subject: "Invalid", description: "Desc" })).rejects.toThrow(/Parent/);
+    const child = await mock.executeTool(name, { taskId: "2", parentId: "2", subject: "Child", description: "Desc" });
+    expect(child.details.task).toMatchObject({ id: "3", parentId: "2" });
+    expect((await mock.executeTool("task_get", { taskId: "2" })).content[0].text).toContain("Children: #3");
+  });
+
+  it.each(["task_append", "task_prepend"])("%s suppresses the task reminder as task activity", async (name) => {
+    const mock = mockPi();
+    initExtension(mock.pi as any);
+    await mock.executeTool("task_create", { subject: "Anchor", description: "Desc" });
+    for (let i = 0; i < 4; i++) await mock.fireLifecycle("turn_start", {}, mockCtx());
+    await mock.executeTool(name, { taskId: "1", subject: "New", description: "Desc" });
+    await mock.fireLifecycle("tool_result", { toolName: name });
+    await mock.fireLifecycle("tool_result", { toolName: "read" });
+    await mock.fireLifecycle("turn_end", { toolResults: [{ toolCallId: "task" }, { toolCallId: "read" }] }, mockCtx());
+    expect(mock.pi.sendMessage).not.toHaveBeenCalled();
+  });
+});
+
+describe("tasks_create_in_batch", () => {
+  it("returns grouped task context and rejects partial plans while preserving single creation IDs", async () => {
+    const mock = mockPi();
+    initExtension(mock.pi as any);
+    const result = await mock.executeTool("tasks_create_in_batch", { tasks: [
+      { kind: "group", subject: "Project", description: "Acceptance", children: [{ subject: "Build", description: "Build evidence" }] },
+      { subject: "Verify", description: "Test evidence" },
+    ] });
+    expect(result.details.tasks.map((task: any) => [task.id, task.parentId])).toEqual([["1", undefined], ["2", "1"], ["3", undefined]]);
+    expect(result.content[0].text).toContain("Build evidence");
+    expect((await mock.executeTool("task_get", { taskId: "2" })).content[0].text).toContain("Parent: #1");
+    await expect(mock.executeTool("tasks_create_in_batch", { tasks: [
+      { subject: "Valid prefix", description: "Desc" },
+      { subject: "Invalid", description: "Desc", children: [] },
+    ] })).rejects.toThrow(/Invalid batch item/);
+    expect((await mock.executeTool("task_list", {})).content[0].text).not.toContain("Valid prefix");
+    expect((await mock.executeTool("task_create", { subject: "Next", description: "Desc" })).content[0].text).toContain("#4");
+  });
+});
+
+describe("task_done handoff", () => {
+  it("completes verified work and returns full next-task context without claiming it", async () => {
+    const mock = mockPi();
+    initExtension(mock.pi as any);
+    await mock.executeTool("tasks_create_in_batch", { tasks: [
+      { kind: "group", subject: "Project", description: "Project acceptance", children: [
+        { subject: "First", description: "Desc" },
+        { subject: "Verify", description: "Run the regression", activeForm: "Verifying", metadata: { path: "test/regression.ts" } },
+      ] },
+    ] });
+    await mock.executeTool("task_update", { taskId: "3", addBlockedBy: ["2"] });
+    await mock.executeTool("task_update", { taskId: "2", status: "in_progress", owner: "team-lead" });
+    const result = await mock.executeTool("task_done", { taskId: "2" });
+    expect(result.details).toMatchObject({ state: "ready", completedTask: { id: "2", status: "completed" }, nextTask: {
+      id: "3", subject: "Verify", description: "Run the regression", parentId: "1", status: "pending", owner: undefined,
+      activeForm: "Verifying", metadata: { path: "test/regression.ts" }, blockedBy: ["2"],
+    } });
+    expect(result.content[0].text).toContain("Run the regression");
+    expect(result.content[0].text).toContain("test/regression.ts");
+    expect((await mock.executeTool("task_get", { taskId: "3" })).content[0].text).toContain("Status: pending");
+    await mock.executeTool("task_update", { taskId: "3", status: "in_progress", owner: "team-lead" });
+    expect((await mock.executeTool("task_done", { taskId: "3" })).details.state).toBe("complete");
+    expect((await mock.executeTool("task_done", { taskId: "3" })).details.state).toBe("complete");
+    for (let i = 0; i < 8; i++) await mock.fireLifecycle("turn_start", {}, mockCtx());
+    expect((await mock.executeTool("task_get", { taskId: "1" })).content[0].text).toContain("Status: completed");
+    expect(mock.pi.sendUserMessage).not.toHaveBeenCalled();
+  });
+
+  it("rejects missing, grouped and blocked completions and reports waiting owners or empty groups", async () => {
+    const mock = mockPi();
+    initExtension(mock.pi as any);
+    await expect(mock.executeTool("task_done", { taskId: "999" })).rejects.toThrow(/not found/);
+    await mock.executeTool("tasks_create_in_batch", { tasks: [
+      { kind: "group", subject: "Project", description: "Desc", children: [
+        { subject: "First", description: "Desc" }, { subject: "Blocked", description: "Desc" },
+      ] },
+    ] });
+    await mock.executeTool("task_update", { taskId: "3", addBlockedBy: ["2"], owner: "other" });
+    await expect(mock.executeTool("task_done", { taskId: "1" })).rejects.toThrow(/derived/);
+    await expect(mock.executeTool("task_done", { taskId: "3" })).rejects.toThrow(/blocked/);
+    expect((await mock.executeTool("task_get", { taskId: "3" })).content[0].text).toContain("Status: pending");
+    const waiting = await mock.executeTool("task_done", { taskId: "2" });
+    expect(waiting.details.state).toBe("waiting");
+    expect(waiting.details.nextTask).toBeUndefined();
+    expect(waiting.content[0].text).toContain("other");
+    await mock.executeTool("task_create", { kind: "group", subject: "Empty", description: "Needs a plan" });
+    const emptyGroup = await mock.executeTool("task_done", { taskId: "3" });
+    expect(emptyGroup.details.state).toBe("waiting");
+    expect(emptyGroup.content[0].text).toContain("Empty");
+  });
+
+  it("keeps the existing flat-list completion countdown", async () => {
+    const mock = mockPi();
+    initExtension(mock.pi as any);
+    await mock.executeTool("task_create", { subject: "Only", description: "Desc" });
+    expect((await mock.executeTool("task_done", { taskId: "1" })).details.state).toBe("complete");
+    for (let i = 0; i < 4; i++) await mock.fireLifecycle("turn_start", {}, mockCtx());
+    expect((await mock.executeTool("task_list", {})).content[0].text).toBe("No tasks found");
+  });
+});
+
+describe("nested task tools", () => {
+  it("creates groups and subtasks, exposes progress, and clears only on request", async () => {
+    const mock = mockPi();
+    initExtension(mock.pi as any);
+    await mock.executeTool("task_create", { subject: "Project", description: "desc", kind: "group" });
+    const rejected = await mock.executeTool("task_create", { subject: "Subgroup", description: "desc", kind: "group", parentId: "1" });
+    expect(rejected.content[0].text).toContain("one level only");
+    await mock.executeTool("task_create", { subject: "First", description: "desc", parentId: "1" });
+    await mock.executeTool("task_create", { subject: "Second", description: "desc", parentId: "1" });
+    await mock.executeTool("task_update", { taskId: "2", status: "completed" });
+    const list = (await mock.executeTool("task_list", {})).content[0].text;
+    expect(list).toContain("#1 [in_progress] Project [1/2 tasks · 50%]");
+    expect(list).toContain("├─ #2 [completed] First");
+    expect(list).toContain("└─ #3 [pending] Second");
+    const child = (await mock.executeTool("task_get", { taskId: "3" })).content[0].text;
+    expect(child).toContain("Parent: #1");
+    expect((await mock.executeTool("tasks_done", {})).content[0].text).toContain("unfinished");
+    await mock.executeTool("task_update", { taskId: "3", status: "completed" });
+    for (let i = 0; i < 8; i++) await mock.fireLifecycle("turn_start", {}, mockCtx());
+    await mock.fireLifecycle("before_agent_start", {}, mockCtx());
+    expect((await mock.executeTool("task_get", { taskId: "1" })).content[0].text).toContain("Progress: 2/2 tasks · 100%");
+    await mock.fireLifecycle("tool_result", { toolName: "read" });
+    // Retained completed projects are history, not unfinished work reminders.
+    await mock.fireLifecycle("turn_end", { toolResults: [{ toolCallId: "read" }] }, mockCtx());
+    expect(mock.pi.sendMessage).not.toHaveBeenCalled();
+    expect((await mock.executeTool("tasks_done", {})).content[0].text).toContain("Cleared 3 completed tasks");
+  });
+
+  it("keeps tree sibling order separate from the execution queue after completion", async () => {
+    const mock = mockPi();
+    initExtension(mock.pi as any);
+    await mock.executeTool("task_create", { subject: "Project", description: "desc", kind: "group" });
+    await mock.executeTool("task_create", { subject: "First", description: "desc", parentId: "1" });
+    await mock.executeTool("task_create", { subject: "Second", description: "desc", parentId: "1" });
+    await mock.executeTool("task_update", { taskId: "2", status: "completed" });
+    const list = (await mock.executeTool("task_list", {})).content[0].text;
+    expect(list.indexOf("#2 [completed]")).toBeLessThan(list.indexOf("#3 [pending]"));
+    expect(list).toContain("Execution queue: #3");
+    const ctx = mockCtx();
+    const select = vi.fn().mockResolvedValueOnce("View all tasks (3)").mockResolvedValue(undefined);
+    await mock.commands.get("tasks").handler("", { ...ctx, ui: { ...ctx.ui, select } });
+    expect(select.mock.calls[1][1].slice(0, 3).map((line: string) => line.match(/#(\d+)/)?.[1])).toEqual(["1", "2", "3"]);
+  });
+
+  it.each(["999", ""])("reports invalid parent %j without adding a task", async (parentId) => {
+    const mock = mockPi();
+    initExtension(mock.pi as any);
+    const result = await mock.executeTool("task_create", { subject: "Child", description: "desc", parentId });
+    expect(result.content[0].text).toMatch(/parent/i);
+    expect((await mock.executeTool("task_list", {})).content[0].text).toBe("No tasks found");
+  });
+
+  it("creates an issue group and child through /tasks", async () => {
+    const mock = mockPi();
+    initExtension(mock.pi as any);
+    const ctx = mockCtx();
+    const select = vi.fn()
+      .mockResolvedValueOnce("Create group")
+      .mockResolvedValueOnce("View all tasks (1)")
+      .mockImplementationOnce((_title, choices) => choices[0])
+      .mockResolvedValueOnce("Add subtask")
+      .mockResolvedValueOnce(undefined);
+    const input = vi.fn()
+      .mockResolvedValueOnce("Project").mockResolvedValueOnce("Acceptance")
+      .mockResolvedValueOnce("Build it").mockResolvedValueOnce("Verified build");
+    await mock.commands.get("tasks").handler("", { ...ctx, ui: { ...ctx.ui, select, input } });
+    expect((await mock.executeTool("task_get", { taskId: "2" })).content[0].text).toContain("Parent: #1");
+    expect((await mock.executeTool("task_get", { taskId: "1" })).content[0].text).toContain("Progress: 0/1 tasks · 0%");
+  });
+});
+
 describe("core task tools", () => {
+  it.each(["tasks_create_in_batch", "task_done"])("resets reminder cadence for %s", async (toolName) => {
+    const mock = mockPi();
+    initExtension(mock.pi as any);
+    await mock.executeTool("task_create", { subject: "Open work", description: "Desc" });
+    for (let i = 0; i < 5; i++) await mock.fireLifecycle("turn_start", {}, mockCtx());
+    await mock.fireLifecycle("tool_result", { toolName: "read" });
+    await mock.fireLifecycle("tool_result", { toolName });
+    await mock.fireLifecycle("turn_end", { toolResults: [{ toolCallId: "read" }, { toolCallId: "task" }] }, mockCtx());
+    expect(mock.pi.sendMessage).not.toHaveBeenCalled();
+    for (let i = 0; i < 5; i++) await mock.fireLifecycle("turn_start", {}, mockCtx());
+    await mock.fireLifecycle("tool_result", { toolName: "read" });
+    await mock.fireLifecycle("turn_end", { toolResults: [{ toolCallId: "read" }] }, mockCtx());
+    expect(mock.pi.sendMessage).toHaveBeenCalledWith(expect.objectContaining({
+      customType: "tasks-reminder", display: false, content: expect.stringContaining("<system-reminder>"),
+    }), { deliverAs: "steer" });
+  });
+
+  it("sends once per cycle and rearms after a task tool", async () => {
+    const mock = mockPi();
+    initExtension(mock.pi as any);
+    await mock.executeTool("task_create", { subject: "Open work", description: "Desc" });
+    await mock.fireLifecycle("turn_start", {}, mockCtx());
+    await mock.fireLifecycle("tool_result", { toolName: "task_create" });
+
+    const finishRead = async () => {
+      await mock.fireLifecycle("tool_result", { toolName: "read" });
+      await mock.fireLifecycle("turn_end", { toolResults: [{ toolCallId: "read" }] }, mockCtx());
+    };
+    for (let i = 0; i < 4; i++) await mock.fireLifecycle("turn_start", {}, mockCtx());
+    await finishRead();
+    expect(mock.pi.sendMessage).toHaveBeenCalledTimes(1);
+
+    await mock.fireLifecycle("turn_start", {}, mockCtx());
+    await finishRead();
+    expect(mock.pi.sendMessage).toHaveBeenCalledTimes(1);
+
+    await mock.fireLifecycle("tool_result", { toolName: "task_update" });
+    for (let i = 0; i < 4; i++) await mock.fireLifecycle("turn_start", {}, mockCtx());
+    await finishRead();
+    expect(mock.pi.sendMessage).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(["empty", "completed"])("does not send a reminder with %s tasks", async (taskState) => {
+    const mock = mockPi();
+    initExtension(mock.pi as any);
+    if (taskState === "completed") {
+      await mock.executeTool("task_create", { subject: "Done", description: "Desc" });
+      await mock.executeTool("task_update", { taskId: "1", status: "completed" });
+    }
+    for (let i = 0; i < 5; i++) await mock.fireLifecycle("turn_start", {}, mockCtx());
+    await mock.fireLifecycle("tool_result", { toolName: "read" });
+    await mock.fireLifecycle("turn_end", { toolResults: [{ toolCallId: "read" }] }, mockCtx());
+    expect(mock.pi.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { completionOrder: ["read", "task_update"] },
+    { completionOrder: ["task_update", "read"] },
+  ])(
+    "does not send a reminder when a task tool shares a batch in $completionOrder completion order",
+    async ({ completionOrder }) => {
+      const mock = mockPi();
+      initExtension(mock.pi as any);
+      await mock.executeTool("task_create", { subject: "Open", description: "Desc" });
+      for (let i = 0; i < 5; i++) await mock.fireLifecycle("turn_start", {}, mockCtx());
+      for (const toolName of completionOrder) await mock.fireLifecycle("tool_result", { toolName });
+      await mock.fireLifecycle("turn_end", {
+        toolResults: [{ toolCallId: "read" }, { toolCallId: "task" }],
+      }, mockCtx());
+      expect(mock.pi.sendMessage).not.toHaveBeenCalled();
+    },
+  );
+
+  it("rearms on reload when task activity follows the saved reminder", async () => {
+    const mock = mockPi();
+    initExtension(mock.pi as any);
+    await mock.executeTool("task_create", { subject: "Open", description: "Desc" });
+    const ctx = {
+      ...mockCtx(),
+      sessionManager: {
+        getSessionId: () => "test-session",
+        getBranch: () => [
+          { type: "custom_message", customType: "tasks-reminder" },
+          { type: "message", message: { role: "toolResult", toolName: "task_get" } },
+        ],
+      },
+    };
+    await mock.fireLifecycle("session_start", { reason: "resume" }, ctx);
+    for (let i = 0; i < 4; i++) await mock.fireLifecycle("turn_start", {}, ctx);
+    await mock.fireLifecycle("tool_result", { toolName: "read" });
+    await mock.fireLifecycle("turn_end", { toolResults: [{ toolCallId: "read" }] }, ctx);
+    expect(mock.pi.sendMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it("defers a due reminder when every result terminates the batch", async () => {
+    const mock = mockPi();
+    initExtension(mock.pi as any);
+    await mock.executeTool("task_create", { subject: "Open", description: "Desc" });
+    for (let i = 0; i < 5; i++) await mock.fireLifecycle("turn_start", {}, mockCtx());
+    await mock.fireLifecycle("tool_execution_end", { toolCallId: "terminal", result: { terminate: true } });
+    await mock.fireLifecycle("tool_result", { toolName: "read" });
+    await mock.fireLifecycle("turn_end", { toolResults: [{ toolCallId: "terminal" }] }, mockCtx());
+    expect(mock.pi.sendMessage).not.toHaveBeenCalled();
+
+    await mock.fireLifecycle("turn_start", {}, mockCtx());
+    await mock.fireLifecycle("tool_result", { toolName: "read" });
+    await mock.fireLifecycle("turn_end", { toolResults: [{ toolCallId: "normal" }] }, mockCtx());
+    expect(mock.pi.sendMessage).toHaveBeenCalledTimes(1);
+  });
+
   it("registers tracking and process tools without task_execute", () => {
     const mock = mockPi();
     initExtension(mock.pi as any);
-    for (const name of ["task_create", "task_list", "task_get", "task_update", "tasks_done", "task_output", "task_stop"]) {
+    for (const name of ["task_create", "tasks_create_in_batch", "task_list", "task_get", "task_update", "task_done", "tasks_done", "task_output", "task_stop"]) {
       expect(mock.tools.has(name)).toBe(true);
     }
     expect(mock.tools.has("task_execute")).toBe(false);

@@ -7,8 +7,8 @@ import { dirname, isAbsolute, join } from "node:path";
 export interface TasksConfig {
   taskScope?: "memory" | "session" | "project";  // default: "session"
   autoClearCompleted?: "never" | "on_list_complete" | "on_task_complete";  // default: "on_list_complete"
-  showAll?: boolean;                     // default: false
-  maxVisible?: number;                   // default: 5
+  showAll?: boolean;                     // legacy setting; the widget is always capped
+  maxVisible?: number;                   // default and maximum: 5 task rows
   hiddenAt?: "top" | "bottom";                         // default: "bottom"
 }
 

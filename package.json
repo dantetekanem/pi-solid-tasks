@@ -1,14 +1,20 @@
 {
-  "name": "@dantetekanem/pi-tasks",
-  "version": "0.8.1",
-  "private": true,
-  "description": "Strict task tracking and coordination for pi.",
+  "name": "pi-solid-tasks",
+  "version": "0.8.15",
+  "description": "Task tracking for Pi with dependencies, ownership, subtasks, and progress.",
   "author": "Leonardo Pereira",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/dantetekanem/pi-tasks.git"
+    "url": "https://github.com/dantetekanem/pi-solid-tasks.git"
   },
+  "files": [
+    "src/",
+    "prompts/",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
   "keywords": [
     "pi-package",
     "pi",
@@ -18,7 +24,7 @@
     "coordination"
   ],
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": ">=0.74.0",
+    "@earendil-works/pi-coding-agent": ">=0.85.1",
     "@earendil-works/pi-tui": ">=0.74.0"
   },
   "dependencies": {

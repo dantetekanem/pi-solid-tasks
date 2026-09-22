@@ -638,6 +638,173 @@ describe("TaskStore (in-memory)", () => {
   });
 });
 
+describe("TaskStore batch creation", () => {
+  it("appends nested plans in input order before history with pending unowned leaves", () => {
+    const store = new TaskStore();
+    const metadata = { callback: () => "existing metadata" };
+    store.create("History", "Desc", undefined, metadata);
+    store.update("1", { status: "completed" });
+    const created = store.createInBatch([
+      { kind: "group", subject: "Project", description: "Acceptance", children: [
+        { subject: "Build", description: "Build evidence", activeForm: "Building", metadata: { area: "core" } },
+        { subject: "Verify", description: "Test evidence" },
+      ] },
+      { subject: "Document", description: "Document evidence" },
+    ]);
+    expect(created.map(task => [task.id, task.parentId])).toEqual([["2", undefined], ["3", "2"], ["4", "2"], ["5", undefined]]);
+    expect(store.list().map(task => task.id)).toEqual(["2", "3", "4", "5", "1"]);
+    expect(created.every(task => task.status === "pending" && !task.owner && !task.blockedBy.length)).toBe(true);
+    expect(created[1]).toMatchObject({ description: "Build evidence", activeForm: "Building", metadata: { area: "core" } });
+    expect(store.get("1")!.metadata).toBe(metadata);
+    expect(store.createInBatch([{ subject: "", description: "", parentId: "2" }])[0].parentId).toBe("2");
+  });
+
+  it.each([
+    { parentId: "999" }, { parentId: "2" },
+    { kind: "group", parentId: "1" }, { children: [] },
+    { kind: "group", children: [{ subject: "Nested", description: "Desc", kind: "group" }] },
+    { kind: "group", children: [{ subject: "Nested", description: "Desc", children: [] }] },
+    { kind: "group", children: [{ subject: "Nested", description: "Desc", parentId: "1" }] },
+    { kind: "group", children: null }, { subject: null },
+  ])("rejects a late invalid entry without changing objects, order or IDs: %j", (invalid) => {
+    const store = new TaskStore();
+    const group = store.create("Group", "Desc", undefined, undefined, undefined, { kind: "group" });
+    store.create("Done", "Desc", undefined, undefined, undefined, { parentId: group.id });
+    store.update("2", { status: "completed" });
+    const before = structuredClone(store.list());
+    expect(() => store.createInBatch([
+      { subject: "Reopens group in staging", description: "Desc", parentId: group.id },
+      { subject: "Invalid", description: "Desc", ...invalid } as any,
+    ])).toThrow();
+    expect(group).toEqual(before.find(task => task.id === group.id));
+    expect(store.list()).toEqual(before);
+    expect(store.create("Next", "Desc").id).toBe("3");
+  });
+
+  it("rejects an empty batch without consuming an ID", () => {
+    const store = new TaskStore();
+    expect(() => store.createInBatch([])).toThrow();
+    expect(store.create("Next", "Desc").id).toBe("1");
+  });
+});
+
+describe("TaskStore next ready task", () => {
+  it("selects leaves without mutating tasks and waits for every prerequisite", () => {
+    const store = new TaskStore();
+    store.createInBatch([{ kind: "group", subject: "Project", description: "Desc", children: [
+      { subject: "A", description: "Desc" }, { subject: "B", description: "Desc" }, { subject: "Join", description: "Desc" },
+    ] }]);
+    store.update("4", { addBlockedBy: ["2", "3"] });
+    const before = structuredClone(store.list());
+    expect(store.nextReadyTask("worker-a")?.id).toBe("2");
+    expect(store.list()).toEqual(before);
+    store.update("2", { status: "in_progress", owner: "worker-a" });
+    store.update("3", { status: "in_progress", owner: "worker-b" });
+    store.update("2", { status: "completed" });
+    expect(store.nextReadyTask("worker-a")).toBeUndefined();
+    store.update("3", { status: "completed" });
+    expect(store.nextReadyTask("worker-a")?.id).toBe("4");
+    expect(store.get("4")!.status).toBe("pending");
+  });
+
+  it("follows positioned order and allows a later prerequisite, not foreign-owned work", () => {
+    const store = new TaskStore();
+    store.create("Dependent", "Desc");
+    store.create("Prerequisite", "Desc");
+    store.update("1", { addBlockedBy: ["2"] });
+    expect(store.nextReadyTask("lead")?.id).toBe("2");
+    const first = store.create("Inserted", "Desc", undefined, undefined, { type: "beginning" });
+    expect(store.nextReadyTask("lead")?.id).toBe(first.id);
+    store.update(first.id, { owner: "other" });
+    expect(store.nextReadyTask("lead")).toBeUndefined();
+    expect(store.nextReadyTask()).toBeUndefined();
+  });
+
+  it("respects owner availability, unknown owners and the parallel limit", () => {
+    const store = new TaskStore();
+    for (let i = 1; i <= 5; i++) store.create(`Task ${i}`, "Desc");
+    store.update("1", { status: "in_progress", owner: "worker-1" });
+    expect(store.nextReadyTask("worker-1")).toBeUndefined();
+    expect(store.nextReadyTask()).toBeUndefined();
+    expect(store.nextReadyTask("worker-2")?.id).toBe("2");
+    for (let i = 2; i <= 4; i++) store.update(String(i), { status: "in_progress", owner: `worker-${i}` });
+    expect(store.nextReadyTask("worker-5")).toBeUndefined();
+    store.update("1", { status: "completed" });
+    expect(store.nextReadyTask("worker-1")?.id).toBe("5");
+  });
+});
+
+describe("TaskStore hierarchy", () => {
+  let store: TaskStore;
+
+  beforeEach(() => {
+    store = new TaskStore();
+  });
+
+  it("allows only direct executable subtasks and rejects deeper creation atomically", () => {
+    const group = store.create("Task", "Desc", undefined, undefined, undefined, { kind: "group" });
+    const child = store.create("Subtask", "Desc", undefined, undefined, undefined, { parentId: group.id });
+    const before = structuredClone(store.list());
+    expect(() => store.create("Subgroup", "Desc", undefined, undefined, undefined, { kind: "group", parentId: group.id }))
+      .toThrow(/one level/i);
+    expect(() => store.create("Grandchild", "Desc", undefined, undefined, undefined, { parentId: child.id }))
+      .toThrow(/group/i);
+    expect(store.list()).toEqual(before);
+    expect(store.create("Next", "Desc", undefined, undefined, undefined, { parentId: group.id }).id).toBe("3");
+  });
+
+  it("creates groups and leaf children with derived parent status", () => {
+    const project = store.create("Project", "Desc", undefined, undefined, undefined, { kind: "group" });
+    const first = store.create("First", "Desc", undefined, undefined, undefined, { parentId: project.id });
+    const second = store.create("Second", "Desc", undefined, undefined, undefined, { parentId: project.id });
+
+    expect([project, first, second].map(task => [task.kind, task.parentId])).toEqual([
+      ["group", undefined], [undefined, project.id], [undefined, project.id],
+    ]);
+    store.update(first.id, { status: "completed" });
+    expect(store.get(project.id)!.status).toBe("in_progress");
+    store.update(second.id, { status: "completed" });
+    expect(store.get(project.id)!.status).toBe("completed");
+  });
+
+  it("rejects invalid parents and group execution or dependency mutations atomically", () => {
+    const group = store.create("Group", "Desc", undefined, undefined, undefined, { kind: "group" });
+    const leaf = store.create("Leaf", "Desc", undefined, undefined, undefined, { parentId: group.id });
+    const before = structuredClone(store.list("id"));
+
+    expect(() => store.create("Invalid", "Desc", undefined, undefined, undefined, { parentId: leaf.id }))
+      .toThrow(/parent.*group/i);
+    expect(() => store.update(group.id, { status: "completed" })).toThrow(/group.*derived/i);
+    expect(() => store.update(group.id, { owner: "worker" })).toThrow(/group.*owner/i);
+    expect(() => store.update(group.id, { addBlocks: [leaf.id] })).toThrow(/groups/i);
+    expect(() => store.update(leaf.id, { addBlockedBy: [group.id] })).toThrow(/groups/i);
+    expect(store.list("id")).toEqual(before);
+  });
+
+  it("does not let earlier groups block executable queue work", () => {
+    const group = store.create("Project", "Desc", undefined, undefined, undefined, { kind: "group" });
+    const leaf = store.create("Leaf", "Desc", undefined, undefined, undefined, { parentId: group.id });
+
+    store.update(leaf.id, { status: "in_progress", owner: "worker" });
+    expect(store.get(leaf.id)!.status).toBe("in_progress");
+  });
+
+  it("rejects deleting a parent with children and clears only completed root hierarchies", () => {
+    const project = store.create("Project", "Desc", undefined, undefined, undefined, { kind: "group" });
+    const done = store.create("Done", "Desc", undefined, undefined, undefined, { parentId: project.id });
+    const open = store.create("Open", "Desc", undefined, undefined, undefined, { parentId: project.id });
+    store.update(done.id, { status: "completed" });
+
+    expect(store.delete(project.id)).toBe(false);
+    expect(store.clearCompleted()).toBe(0);
+    expect(store.get(done.id)).toBeDefined();
+
+    store.update(open.id, { status: "completed" });
+    expect(store.clearCompleted()).toBe(3);
+    expect(store.list()).toEqual([]);
+  });
+});
+
 describe("TaskStore (file-backed)", () => {
   const testListId = `test-${Date.now()}-${Math.random().toString(36).slice(2)}`;
   const tasksDir = join(homedir(), ".pi", "tasks");
@@ -648,6 +815,37 @@ describe("TaskStore (file-backed)", () => {
     try { rmSync(filePath); } catch { /* */ }
     try { rmSync(filePath + ".lock"); } catch { /* */ }
     try { rmSync(filePath + ".tmp"); } catch { /* */ }
+  });
+
+  it("creates a batch after reloading shared state and preserves disk on invalid input", () => {
+    const first = new TaskStore(testListId);
+    const stale = new TaskStore(testListId);
+    first.create("Existing", "Desc");
+    const created = stale.createInBatch([
+      { kind: "group", subject: "Project", description: "Desc", children: [{ subject: "Child", description: "Desc" }] },
+    ]);
+    expect(created.map(task => task.id)).toEqual(["2", "3"]);
+    expect(first.list().map(task => [task.id, task.parentId])).toEqual([["1", undefined], ["2", undefined], ["3", "2"]]);
+    const before = readFileSync(filePath, "utf-8");
+    expect(() => first.createInBatch([
+      { subject: "Valid prefix", description: "Desc" },
+      { subject: "Missing parent", description: "Desc", parentId: "999" },
+    ])).toThrow();
+    expect(readFileSync(filePath, "utf-8")).toBe(before);
+    expect(new TaskStore(testListId).list()).toEqual(stale.list());
+    expect(stale.create("Next", "Desc").id).toBe("4");
+  });
+
+  it("selects the next ready task from current shared state without saving the preview", () => {
+    const current = new TaskStore(testListId);
+    current.create("First", "Desc");
+    current.create("Second", "Desc");
+    const stale = new TaskStore(testListId);
+    current.update("1", { status: "completed" });
+    const before = readFileSync(filePath, "utf-8");
+    expect(stale.nextReadyTask("worker")?.id).toBe("2");
+    expect(readFileSync(filePath, "utf-8")).toBe(before);
+    expect(current.get("2")!.status).toBe("pending");
   });
 
   it("persists tasks to disk", () => {
@@ -669,6 +867,17 @@ describe("TaskStore (file-backed)", () => {
 
     const store2 = new TaskStore(testListId);
     expect(store2.get("1")!.status).toBe("in_progress");
+  });
+
+  it("persists parent links and group kinds across instances", () => {
+    const store1 = new TaskStore(testListId);
+    const project = store1.create("Project", "Desc", undefined, undefined, undefined, { kind: "group" });
+    store1.create("Leaf", "Desc", undefined, undefined, undefined, { parentId: project.id });
+
+    const store2 = new TaskStore(testListId);
+    expect(store2.list("id").map(task => [task.kind, task.parentId])).toEqual([
+      ["group", undefined], [undefined, project.id],
+    ]);
   });
 
   it("persists completed tasks to disk", () => {

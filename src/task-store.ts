@@ -8,7 +8,7 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
-import type { Task, TaskCreatePosition, TaskStatus, TaskStoreData } from "./types.js";
+import type { Task, TaskBatchItem, TaskCreateOptions, TaskCreatePosition, TaskStatus, TaskStoreData } from "./types.js";
 
 function sortById(a: Task, b: Task): number {
   return Number(a.id) - Number(b.id);
@@ -89,7 +89,7 @@ export class TaskPositionError extends Error {
   override name = "TaskPositionError";
 }
 
-export type TaskUpdateErrorCode = "missing_dependency" | "self_dependency" | "dependency_cycle" | "blocked" | "invalid_status" | "owner_busy" | "parallel_limit";
+export type TaskUpdateErrorCode = "missing_dependency" | "self_dependency" | "dependency_cycle" | "blocked" | "invalid_status" | "invalid_hierarchy" | "owner_busy" | "parallel_limit";
 
 export class TaskUpdateError extends Error {
   override name = "TaskUpdateError";
@@ -143,6 +143,7 @@ export class TaskStore {
       }
       const normalizedGraph = this.normalizedDependencyGraph(this.dependencyGraph());
       if (normalizedGraph) this.applyDependencyGraph(normalizedGraph, false);
+      this.refreshGroupStatuses();
     } catch { /* corrupt file — start fresh */ }
   }
 
@@ -176,6 +177,41 @@ export class TaskStore {
     return Array.from(this.tasks.values()).sort(compareTaskOrder);
   }
 
+  private isGroup(task: Task | undefined): boolean {
+    return task?.kind === "group";
+  }
+
+  private hasChildren(id: string): boolean {
+    return Array.from(this.tasks.values()).some(task => task.parentId === id);
+  }
+
+  private refreshGroupStatuses(): void {
+    const visiting = new Set<string>();
+    const derive = (group: Task): TaskStatus => {
+      if (!this.isGroup(group) || visiting.has(group.id)) return group.status;
+      visiting.add(group.id);
+      const children = Array.from(this.tasks.values()).filter(task => task.parentId === group.id);
+      const statuses = children.map(child => this.isGroup(child) ? derive(child) : child.status);
+      visiting.delete(group.id);
+      const status: TaskStatus = statuses.length === 0 || statuses.every(value => value === "pending")
+        ? "pending"
+        : statuses.every(value => value === "completed") ? "completed" : "in_progress";
+      group.status = status;
+      return status;
+    };
+    for (const task of this.tasks.values()) if (this.isGroup(task)) derive(task);
+  }
+
+  private validateCreateOptions(options: TaskCreateOptions): void {
+    if (options.parentId === undefined) return;
+    const parent = this.tasks.get(options.parentId);
+    if (!parent) throw new TaskUpdateError("invalid_hierarchy", `Parent task #${options.parentId} does not exist`, [options.parentId]);
+    if (!this.isGroup(parent)) throw new TaskUpdateError("invalid_hierarchy", `Parent task #${options.parentId} must be a group`, [options.parentId]);
+    if (options.kind === "group" || parent.parentId !== undefined) {
+      throw new TaskUpdateError("invalid_hierarchy", "Subtasks have one level only: a root group can contain executable tasks, not subgroups", [options.parentId]);
+    }
+  }
+
   private createIndex(position: TaskCreatePosition, openTasks: Task[]): number {
     if (position.type === "beginning") return 0;
     if (position.type === "end") return openTasks.length;
@@ -190,16 +226,46 @@ export class TaskStore {
     return position.type === "before" ? anchorIndex : anchorIndex + 1;
   }
 
+  /** Pull unfinished prerequisites ahead of dependents, following existing queue priority. */
+  private dependencyOrderedOpenTasks(tasks: Task[]): Task[] {
+    const graph = this.dependencyGraph();
+    if (!this.graphReferencesKnownTasks(graph) || !this.graphIsAcyclic(graph)) {
+      throw new TaskPositionError("Cannot order tasks: dependencies contain missing tasks or a cycle");
+    }
+    const blockers = new Map<string, Task[]>(tasks.map(task => [task.id, []]));
+    for (const task of tasks) {
+      for (const dependentId of graph.get(task.id) ?? []) {
+        blockers.get(dependentId)?.push(task);
+      }
+    }
+
+    const ordered: Task[] = [];
+    const visited = new Set<string>();
+    const visit = (task: Task): void => {
+      if (visited.has(task.id)) return;
+      visited.add(task.id);
+      for (const blocker of blockers.get(task.id) ?? []) visit(blocker);
+      ordered.push(task);
+    };
+    for (const task of tasks) visit(task);
+    return ordered;
+  }
+
   create(
     subject: string,
     description: string,
     activeForm?: string,
     metadata?: Record<string, any>,
     position: TaskCreatePosition = { type: "end" },
+    options: TaskCreateOptions = {},
   ): Task {
     return this.withLock(() => {
+      this.validateCreateOptions(options);
       const ordered = this.orderedTasks();
-      const openTasks = ordered.filter(task => task.status !== "completed");
+      const existingOpenTasks = ordered.filter(task => task.status !== "completed");
+      const openTasks = position.type === "before" || position.type === "after"
+        ? this.dependencyOrderedOpenTasks(existingOpenTasks)
+        : existingOpenTasks;
       const completedTasks = ordered.filter(task => task.status === "completed");
       const insertionIndex = this.createIndex(position, openTasks);
       const now = Date.now();
@@ -209,6 +275,8 @@ export class TaskStore {
         description,
         status: "pending",
         order: 0,
+        kind: options.kind,
+        parentId: options.parentId,
         activeForm,
         owner: undefined,
         metadata: metadata ?? {},
@@ -223,19 +291,78 @@ export class TaskStore {
         orderedTask.order = index;
       }
       this.tasks.set(task.id, task);
+      this.refreshGroupStatuses();
       return task;
+    });
+  }
+
+  /** Isolate create/start previews; neither operation mutates nested metadata. */
+  private memorySnapshot(): TaskStore {
+    const snapshot = new TaskStore();
+    snapshot.nextId = this.nextId;
+    snapshot.tasks = new Map(Array.from(this.tasks, ([id, task]) => [id, {
+      ...task, blocks: [...task.blocks], blockedBy: [...task.blockedBy],
+    }]));
+    return snapshot;
+  }
+
+  createInBatch(items: TaskBatchItem[]): Task[] {
+    return this.withLock(() => {
+      if (!Array.isArray(items) || items.length === 0) {
+        throw new TaskUpdateError("invalid_hierarchy", "A batch must contain at least one task");
+      }
+      const staged = this.memorySnapshot(); // After the locked reload, never before it.
+      const created: Task[] = [];
+      const append = (item: TaskBatchItem, path: string, parentId?: string): void => {
+        if (!item || typeof item.subject !== "string" || typeof item.description !== "string" ||
+          (item.activeForm !== undefined && typeof item.activeForm !== "string") ||
+          (item.metadata !== undefined && (!item.metadata || typeof item.metadata !== "object" || Array.isArray(item.metadata))) ||
+          (item.kind !== undefined && item.kind !== "task" && item.kind !== "group") ||
+          (parentId !== undefined && ("kind" in item || "parentId" in item || "children" in item)) ||
+          (item.kind === "group" && item.parentId !== undefined) ||
+          (item.children !== undefined && (item.kind !== "group" || !Array.isArray(item.children)))) {
+          throw new TaskUpdateError("invalid_hierarchy", `Invalid batch item at ${path}: use root groups with one level of executable children`);
+        }
+        const task = staged.create(item.subject, item.description, item.activeForm, item.metadata, undefined, {
+          kind: item.kind, parentId: parentId ?? item.parentId,
+        });
+        created.push(task);
+        for (const [index, child] of (item.children ?? []).entries()) append(child, `${path}.children[${index}]`, task.id);
+      };
+      for (const [index, item] of items.entries()) append(item, `tasks[${index}]`);
+      this.tasks = staged.tasks;
+      this.nextId = staged.nextId;
+      return created;
     });
   }
 
   get(id: string): Task | undefined {
     if (this.filePath) this.load();
+    this.refreshGroupStatuses();
     return this.tasks.get(id);
   }
 
   /** List all tasks, sorted by the given order (defaults to open task order, then completed). */
   list(sortOrder: "queue" | "id" | "status" | "recent" | "oldest" = "queue"): Task[] {
     if (this.filePath) this.load();
+    this.refreshGroupStatuses();
     return Array.from(this.tasks.values()).sort(SORT_FNS[sortOrder]);
+  }
+
+  /** Advisory selection only: the eventual start still validates the current store. */
+  nextReadyTask(owner?: string): Task | undefined {
+    const tasks = this.list();
+    const preview = this.memorySnapshot();
+    for (const task of tasks) {
+      if (this.isGroup(task) || task.status !== "pending" || (task.owner && task.owner !== owner)) continue;
+      try {
+        preview.update(task.id, { status: "in_progress", owner });
+        return task;
+      } catch (error) {
+        if (!(error instanceof TaskUpdateError)) throw error;
+      }
+    }
+    return undefined;
   }
 
   /** Build the canonical blocker -> dependent graph from both persisted edge directions. */
@@ -363,6 +490,13 @@ export class TaskStore {
           [dependentId],
         );
       }
+      if (this.isGroup(this.tasks.get(blockerId)) || this.isGroup(this.tasks.get(dependentId))) {
+        throw new TaskUpdateError(
+          "invalid_hierarchy",
+          "Dependencies can only connect executable leaf tasks, not groups",
+          [blockerId, dependentId],
+        );
+      }
       if (blockerId === dependentId) {
         throw new TaskUpdateError(
           "self_dependency",
@@ -423,13 +557,30 @@ export class TaskStore {
 
       // Handle deletion
       if (fields.status === "deleted") {
+        if (this.hasChildren(id)) {
+          throw new TaskUpdateError(
+            "invalid_hierarchy",
+            `Cannot delete parent task #${id} while it has children`,
+            [id],
+          );
+        }
         this.tasks.delete(id);
         // Clean up dependency edges pointing to this task
         for (const t of this.tasks.values()) {
           t.blocks = t.blocks.filter(bid => bid !== id);
           t.blockedBy = t.blockedBy.filter(bid => bid !== id);
         }
+        this.refreshGroupStatuses();
         return { task: undefined, changedFields: ["deleted"], warnings: [] };
+      }
+
+      if (this.isGroup(task)) {
+        if (fields.status !== undefined) {
+          throw new TaskUpdateError("invalid_hierarchy", `Group #${id} status is derived from its children`, [id]);
+        }
+        if (fields.owner !== undefined) {
+          throw new TaskUpdateError("invalid_hierarchy", `Group #${id} cannot have an owner`, [id]);
+        }
       }
 
       // Validate the full candidate graph and status invariants before mutating any field.
@@ -484,7 +635,7 @@ export class TaskStore {
 
       if (fields.status === "in_progress" && task.status !== "in_progress") {
         const runningTasks = this.orderedTasks().filter(candidate =>
-          candidate.id !== id && candidate.status === "in_progress"
+          candidate.id !== id && !this.isGroup(candidate) && candidate.status === "in_progress"
         );
         if (runningTasks.length >= MAX_PARALLEL_RUNNING_TASKS) {
           throw new TaskUpdateError(
@@ -515,6 +666,7 @@ export class TaskStore {
       if (isClaimingActiveTask && effectiveOwner) {
         const otherOwnedTask = this.orderedTasks().find(candidate =>
           candidate.id !== id &&
+          !this.isGroup(candidate) &&
           candidate.owner === effectiveOwner &&
           candidate.status !== "completed"
         );
@@ -529,7 +681,7 @@ export class TaskStore {
 
       if (fields.status === "in_progress") {
         const unfinishedEarlierTasks = this.orderedTasks().filter(candidate => {
-          if (candidate.order >= task.order || candidate.status === "completed") return false;
+          if (this.isGroup(candidate) || candidate.order >= task.order || candidate.status === "completed") return false;
           if (this.pathExists(dependencyGraph, id, candidate.id)) return false;
           return !(
             candidate.status === "in_progress" &&
@@ -614,6 +766,7 @@ export class TaskStore {
       }
 
       task.updatedAt = Date.now();
+      this.refreshGroupStatuses();
       return { task, changedFields, warnings };
     });
   }
@@ -621,7 +774,7 @@ export class TaskStore {
   /** Delete a task by ID. Returns true if deleted. */
   delete(id: string): boolean {
     return this.withLock(() => {
-      if (!this.tasks.has(id)) return false;
+      if (!this.tasks.has(id) || this.hasChildren(id)) return false;
       this.tasks.delete(id);
       // Clean up dependency edges
       for (const t of this.tasks.values()) {
@@ -652,11 +805,20 @@ export class TaskStore {
   clearCompleted(): number {
     return this.withLock(() => {
       let count = 0;
-      for (const [id, task] of this.tasks) {
-        if (task.status === "completed") {
-          this.tasks.delete(id);
-          count++;
-        }
+      this.refreshGroupStatuses();
+      const deletedIds = new Set<string>();
+      const addHierarchy = (id: string): void => {
+        if (deletedIds.has(id)) return;
+        deletedIds.add(id);
+        for (const child of this.tasks.values()) if (child.parentId === id) addHierarchy(child.id);
+      };
+      for (const task of this.tasks.values()) {
+        if (this.isGroup(task) && !task.parentId && task.status === "completed") addHierarchy(task.id);
+        if (!this.isGroup(task) && !task.parentId && task.status === "completed") deletedIds.add(task.id);
+      }
+      for (const id of deletedIds) {
+        this.tasks.delete(id);
+        count++;
       }
       // Clean up dependency edges for deleted tasks
       if (count > 0) {
