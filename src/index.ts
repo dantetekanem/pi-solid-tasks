@@ -28,8 +28,8 @@ import { ProcessTracker } from "./process-tracker.js";
 import { loadPrompt } from "./prompts.js";
 import {
   type CadenceConfig,
+  consumeReminderDue,
   createCadenceState,
-  drainReminderForContext,
   evaluateToolResult,
   onTurnStart,
   resetCadenceState,
@@ -78,6 +78,7 @@ const AUTO_CLEAR_DELAY = 4;
 
 const TASK_COMPLETION_CONTRACT = loadPrompt("completion-contract", { maxParallelTasks: MAX_PARALLEL_RUNNING_TASKS });
 const BULK_WORK_DECOMPOSITION_CONTRACT = loadPrompt("bulk-work-decomposition");
+const REMINDER_CUSTOM_TYPE = "tasks-reminder";
 const SYSTEM_REMINDER = loadPrompt("system-reminder", {
   completionContract: TASK_COMPLETION_CONTRACT,
   bulkWorkDecomposition: BULK_WORK_DECOMPOSITION_CONTRACT,
@@ -180,28 +181,22 @@ export default function (pi: ExtensionAPI) {
   // Cadence decisions live in `reminder-cadence.ts` so they're
   // unit-testable without spinning up a fake ExtensionAPI.
   const cadence = createCadenceState();
+  const terminatedToolCalls = new Set<string>();
   const cadenceConfig: CadenceConfig = {
     reminderInterval: REMINDER_INTERVAL,
     taskToolNames: TASK_TOOL_NAMES,
   };
 
   pi.on("turn_start", async (_event, ctx) => {
+    terminatedToolCalls.clear();
     onTurnStart(cadence);
     widget.setUICtx(ctx.ui as UICtx);
     upgradeStoreIfNeeded(ctx);
     if (autoClear.onTurnStart(cadence.currentTurn)) widget.update();
   });
 
-  // ── System-reminder injection ──
-  //
-  // tool_result is used ONLY to track cadence. We DO NOT mutate non-task
-  // tool result content — appending a <system-reminder> there would
-  // corrupt model-visible transcript semantics for unrelated tools (read,
-  // bash, grep, …) and make tool-output debugging miserable.
-  //
-  // The actual injection happens in the `context` hook below, which fires
-  // before each LLM call and returns a modified copy of the messages
-  // without persisting or polluting any tool output.
+  // Track cadence without modifying tool results. Delivery waits for the full
+  // batch, so a task tool can cancel a reminder queued by an earlier result.
   pi.on("tool_result", async (event) => {
     // Cheap-first: avoid store.list() disk I/O unless the cadence helper
     // says the call could matter (i.e. it's a task tool that resets state,
@@ -220,24 +215,30 @@ export default function (pi: ExtensionAPI) {
     return {};
   });
 
-  // Inject the transient system-reminder into the upcoming LLM call's
-  // messages, never into a tool result. The reminder is appended as a
-  // user message so models that don't support custom message types still
-  // receive it. It is not persisted in the session store — `context`
-  // returns a transformed messages array used only for this one request.
-  pi.on("context", async (event) => {
-    if (!drainReminderForContext(cadence)) return {};
+  pi.on("tool_execution_end", (event) => {
+    if (event.result?.terminate === true) terminatedToolCalls.add(event.toolCallId);
+  });
 
-    return {
-      messages: [
-        ...event.messages,
-        {
-          role: "user" as const,
-          content: [{ type: "text" as const, text: SYSTEM_REMINDER }],
-          timestamp: Date.now(),
-        },
-      ],
-    };
+  pi.on("turn_end", (event, ctx) => {
+    if (
+      !cadence.reminderDue ||
+      ctx.signal?.aborted ||
+      event.toolResults.length === 0 ||
+      event.toolResults.every(result => terminatedToolCalls.has(result.toolCallId))
+    ) return;
+    if (!store.list().some(task => task.status !== "completed")) {
+      cadence.reminderDue = false;
+      return;
+    }
+    if (!consumeReminderDue(cadence)) return;
+
+    // Pi defers triggerTurn:false messages outside this tool-loop snapshot.
+    // Steering at turn_end persists the message before the next request.
+    pi.sendMessage({
+      customType: REMINDER_CUSTOM_TYPE,
+      content: SYSTEM_REMINDER,
+      display: false,
+    }, { deliverAs: "steer" });
   });
 
   // Grab UI context early — before_agent_start fires before any tool calls,
@@ -259,6 +260,13 @@ export default function (pi: ExtensionAPI) {
     storeUpgraded = false;
     persistedTasksShown = false;
     resetCadenceState(cadence);
+    for (const entry of ctx.sessionManager.getBranch().reverse()) {
+      if (entry.type === "custom_message" && entry.customType === REMINDER_CUSTOM_TYPE) {
+        cadence.reminderInjectedThisCycle = true;
+        break;
+      }
+      if (entry.type === "message" && entry.message.role === "toolResult" && TASK_TOOL_NAMES.has(entry.message.toolName)) break;
+    }
     autoClear.reset();
 
     // Memory mode has no file-backed store to switch — clear explicitly on /new.

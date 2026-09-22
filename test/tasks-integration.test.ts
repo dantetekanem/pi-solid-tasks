@@ -9,7 +9,7 @@ function mockCtx() {
   return {
     model: { id: "test-model", name: "Test" },
     modelRegistry: {},
-    sessionManager: { getSessionId: () => "test-session" },
+    sessionManager: { getSessionId: () => "test-session", getBranch: () => [] },
     ui: {
       setWidget: vi.fn(),
       setStatus: vi.fn(),
@@ -43,6 +43,7 @@ function mockPi() {
       },
     },
     sendUserMessage: vi.fn(),
+    sendMessage: vi.fn(),
   };
 
   return {
@@ -56,7 +57,10 @@ function mockPi() {
     },
     async fireLifecycle(event: string, ...args: any[]) {
       let result: any;
-      for (const handler of lifecycleHandlers.get(event) ?? []) result = await handler(...args);
+      const eventArgs = event === "turn_end"
+        ? [{ message: { role: "assistant", stopReason: "toolUse" }, ...args[0] }, ...args.slice(1)]
+        : args;
+      for (const handler of lifecycleHandlers.get(event) ?? []) result = await handler(...eventArgs);
       return result;
     },
   };
@@ -134,13 +138,13 @@ describe("session-scoped storage", () => {
 
     await mock.fireLifecycle("session_start", { reason: "startup" }, {
       ...mockCtx(),
-      sessionManager: { getSessionId: () => "session-a" },
+      sessionManager: { getSessionId: () => "session-a", getBranch: () => [] },
     });
     await mock.executeTool("task_create", { subject: "A", description: "Task A" });
 
     await mock.fireLifecycle("session_start", { reason: "new" }, {
       ...mockCtx(),
-      sessionManager: { getSessionId: () => "session-b" },
+      sessionManager: { getSessionId: () => "session-b", getBranch: () => [] },
     });
     await mock.executeTool("task_create", { subject: "B", description: "Task B" });
 
@@ -225,7 +229,8 @@ describe("relative task creation tools", () => {
     await mock.executeTool(name, { taskId: "1", subject: "New", description: "Desc" });
     await mock.fireLifecycle("tool_result", { toolName: name });
     await mock.fireLifecycle("tool_result", { toolName: "read" });
-    expect(await mock.fireLifecycle("context", { messages: [] })).toEqual({});
+    await mock.fireLifecycle("turn_end", { toolResults: [{ toolCallId: "task" }, { toolCallId: "read" }] }, mockCtx());
+    expect(mock.pi.sendMessage).not.toHaveBeenCalled();
   });
 });
 
@@ -333,7 +338,8 @@ describe("nested task tools", () => {
     expect((await mock.executeTool("task_get", { taskId: "1" })).content[0].text).toContain("Progress: 2/2 tasks · 100%");
     await mock.fireLifecycle("tool_result", { toolName: "read" });
     // Retained completed projects are history, not unfinished work reminders.
-    expect(await mock.fireLifecycle("context", { messages: [] })).toEqual({});
+    await mock.fireLifecycle("turn_end", { toolResults: [{ toolCallId: "read" }] }, mockCtx());
+    expect(mock.pi.sendMessage).not.toHaveBeenCalled();
     expect((await mock.executeTool("tasks_done", {})).content[0].text).toContain("Cleared 3 completed tasks");
   });
 
@@ -388,10 +394,107 @@ describe("core task tools", () => {
     for (let i = 0; i < 5; i++) await mock.fireLifecycle("turn_start", {}, mockCtx());
     await mock.fireLifecycle("tool_result", { toolName: "read" });
     await mock.fireLifecycle("tool_result", { toolName });
-    expect(await mock.fireLifecycle("context", { messages: [] })).toEqual({});
+    await mock.fireLifecycle("turn_end", { toolResults: [{ toolCallId: "read" }, { toolCallId: "task" }] }, mockCtx());
+    expect(mock.pi.sendMessage).not.toHaveBeenCalled();
     for (let i = 0; i < 5; i++) await mock.fireLifecycle("turn_start", {}, mockCtx());
     await mock.fireLifecycle("tool_result", { toolName: "read" });
-    expect((await mock.fireLifecycle("context", { messages: [] })).messages).toHaveLength(1);
+    await mock.fireLifecycle("turn_end", { toolResults: [{ toolCallId: "read" }] }, mockCtx());
+    expect(mock.pi.sendMessage).toHaveBeenCalledWith(expect.objectContaining({
+      customType: "tasks-reminder", display: false, content: expect.stringContaining("<system-reminder>"),
+    }), { deliverAs: "steer" });
+  });
+
+  it("sends once per cycle and rearms after a task tool", async () => {
+    const mock = mockPi();
+    initExtension(mock.pi as any);
+    await mock.executeTool("task_create", { subject: "Open work", description: "Desc" });
+    await mock.fireLifecycle("turn_start", {}, mockCtx());
+    await mock.fireLifecycle("tool_result", { toolName: "task_create" });
+
+    const finishRead = async () => {
+      await mock.fireLifecycle("tool_result", { toolName: "read" });
+      await mock.fireLifecycle("turn_end", { toolResults: [{ toolCallId: "read" }] }, mockCtx());
+    };
+    for (let i = 0; i < 4; i++) await mock.fireLifecycle("turn_start", {}, mockCtx());
+    await finishRead();
+    expect(mock.pi.sendMessage).toHaveBeenCalledTimes(1);
+
+    await mock.fireLifecycle("turn_start", {}, mockCtx());
+    await finishRead();
+    expect(mock.pi.sendMessage).toHaveBeenCalledTimes(1);
+
+    await mock.fireLifecycle("tool_result", { toolName: "task_update" });
+    for (let i = 0; i < 4; i++) await mock.fireLifecycle("turn_start", {}, mockCtx());
+    await finishRead();
+    expect(mock.pi.sendMessage).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(["empty", "completed"])("does not send a reminder with %s tasks", async (taskState) => {
+    const mock = mockPi();
+    initExtension(mock.pi as any);
+    if (taskState === "completed") {
+      await mock.executeTool("task_create", { subject: "Done", description: "Desc" });
+      await mock.executeTool("task_update", { taskId: "1", status: "completed" });
+    }
+    for (let i = 0; i < 5; i++) await mock.fireLifecycle("turn_start", {}, mockCtx());
+    await mock.fireLifecycle("tool_result", { toolName: "read" });
+    await mock.fireLifecycle("turn_end", { toolResults: [{ toolCallId: "read" }] }, mockCtx());
+    expect(mock.pi.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { completionOrder: ["read", "task_update"] },
+    { completionOrder: ["task_update", "read"] },
+  ])(
+    "does not send a reminder when a task tool shares a batch in $completionOrder completion order",
+    async ({ completionOrder }) => {
+      const mock = mockPi();
+      initExtension(mock.pi as any);
+      await mock.executeTool("task_create", { subject: "Open", description: "Desc" });
+      for (let i = 0; i < 5; i++) await mock.fireLifecycle("turn_start", {}, mockCtx());
+      for (const toolName of completionOrder) await mock.fireLifecycle("tool_result", { toolName });
+      await mock.fireLifecycle("turn_end", {
+        toolResults: [{ toolCallId: "read" }, { toolCallId: "task" }],
+      }, mockCtx());
+      expect(mock.pi.sendMessage).not.toHaveBeenCalled();
+    },
+  );
+
+  it("rearms on reload when task activity follows the saved reminder", async () => {
+    const mock = mockPi();
+    initExtension(mock.pi as any);
+    await mock.executeTool("task_create", { subject: "Open", description: "Desc" });
+    const ctx = {
+      ...mockCtx(),
+      sessionManager: {
+        getSessionId: () => "test-session",
+        getBranch: () => [
+          { type: "custom_message", customType: "tasks-reminder" },
+          { type: "message", message: { role: "toolResult", toolName: "task_get" } },
+        ],
+      },
+    };
+    await mock.fireLifecycle("session_start", { reason: "resume" }, ctx);
+    for (let i = 0; i < 4; i++) await mock.fireLifecycle("turn_start", {}, ctx);
+    await mock.fireLifecycle("tool_result", { toolName: "read" });
+    await mock.fireLifecycle("turn_end", { toolResults: [{ toolCallId: "read" }] }, ctx);
+    expect(mock.pi.sendMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it("defers a due reminder when every result terminates the batch", async () => {
+    const mock = mockPi();
+    initExtension(mock.pi as any);
+    await mock.executeTool("task_create", { subject: "Open", description: "Desc" });
+    for (let i = 0; i < 5; i++) await mock.fireLifecycle("turn_start", {}, mockCtx());
+    await mock.fireLifecycle("tool_execution_end", { toolCallId: "terminal", result: { terminate: true } });
+    await mock.fireLifecycle("tool_result", { toolName: "read" });
+    await mock.fireLifecycle("turn_end", { toolResults: [{ toolCallId: "terminal" }] }, mockCtx());
+    expect(mock.pi.sendMessage).not.toHaveBeenCalled();
+
+    await mock.fireLifecycle("turn_start", {}, mockCtx());
+    await mock.fireLifecycle("tool_result", { toolName: "read" });
+    await mock.fireLifecycle("turn_end", { toolResults: [{ toolCallId: "normal" }] }, mockCtx());
+    expect(mock.pi.sendMessage).toHaveBeenCalledTimes(1);
   });
 
   it("registers tracking and process tools without task_execute", () => {
