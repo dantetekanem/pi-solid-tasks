@@ -1,9 +1,21 @@
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import initExtension from "../src/index.js";
 
-beforeEach(() => { process.env.PI_TASKS = "off"; });
-afterEach(() => { delete process.env.PI_TASKS; });
+let configDir: string;
+beforeEach(() => {
+  process.env.PI_TASKS = "off";
+  configDir = mkdtempSync(join(tmpdir(), "pi-tasks-config-"));
+  vi.stubEnv("PI_TASKS_CONFIG", join(configDir, "tasks-config.json"));
+});
+afterEach(() => {
+  delete process.env.PI_TASKS;
+  vi.unstubAllEnvs();
+  rmSync(configDir, { recursive: true, force: true });
+});
 
 function mockCtx() {
   return {
@@ -21,11 +33,13 @@ function mockCtx() {
 function mockPi() {
   const tools = new Map<string, any>();
   const commands = new Map<string, any>();
+  const shortcuts = new Map<string, any>();
   const lifecycleHandlers = new Map<string, Array<(...args: any[]) => any>>();
   const eventHandlers = new Map<string, Array<(data: unknown) => void>>();
   const pi = {
     registerTool(tool: any) { tools.set(tool.name, tool); },
     registerCommand(name: string, command: any) { commands.set(name, command); },
+    registerShortcut(key: string, shortcut: any) { shortcuts.set(key, shortcut); },
     on(event: string, handler: (...args: any[]) => any) {
       const handlers = lifecycleHandlers.get(event) ?? [];
       handlers.push(handler);
@@ -50,6 +64,7 @@ function mockPi() {
     pi,
     tools,
     commands,
+    shortcuts,
     async executeTool(name: string, params: any, ctx = mockCtx()) {
       const tool = tools.get(name);
       if (!tool) throw new Error(`Tool ${name} not registered`);
@@ -114,14 +129,15 @@ describe("session-scoped storage", () => {
         bold: (text: string) => text,
         strikethrough: (text: string) => text,
       });
-      const before = component.render();
+      const renderContent = () => component.render().filter((line: string) => line.length > 0);
+      const before = renderContent();
       expect(before[1]).toContain("✔ #1 Finished");
       expect(before[2]).toMatch(/[✳-✽] #2 Working…/);
       expect(before[3]).toContain("◻ #3 Next");
 
       vi.advanceTimersByTime(150);
       expect(tui.requestRender).toHaveBeenCalled();
-      expect(component.render()[2]).not.toBe(before[2]);
+      expect(renderContent()[2]).not.toBe(before[2]);
     } finally {
       await original.fireLifecycle("session_shutdown", { reason: "quit" }, ctx);
       await reloaded.fireLifecycle("session_shutdown", { reason: "quit" }, ctx);
@@ -154,6 +170,40 @@ describe("session-scoped storage", () => {
     expect(list.content[0].text).toContain("#1 [pending] B");
     expect(list.content[0].text).not.toContain("A");
   });
+});
+
+it.each([false, true])("persists the shortcut choice across sessions from compact=%s", async compact => {
+  const configPath = join(configDir, "tasks-config.json");
+  writeFileSync(configPath, JSON.stringify({ compact, hiddenAt: "top" }));
+  const startSession = async (sessionId: string) => {
+    const mock = mockPi();
+    const ctx = mockCtx();
+    ctx.sessionManager.getSessionId = () => sessionId;
+    initExtension(mock.pi as any);
+    await mock.fireLifecycle("session_start", { reason: "startup" }, ctx);
+    await mock.executeTool("task_create", { subject: "Next", description: "Desc" });
+    const factory = ctx.ui.setWidget.mock.calls.find(([, content]) => typeof content === "function")?.[1];
+    const tui = { terminal: { columns: 100 }, requestRender: vi.fn() };
+    const component = factory(tui, {
+      fg: (_color: string, text: string) => text,
+      bold: (text: string) => text,
+      strikethrough: (text: string) => text,
+    });
+    return { mock, ctx, tui, render: () => component.render().filter((line: string) => line.length > 0) };
+  };
+
+  const first = await startSession("first");
+  expect(first.render()).toHaveLength(compact ? 1 : 2);
+  writeFileSync(configPath, JSON.stringify({ compact, hiddenAt: "bottom" }));
+  await first.mock.shortcuts.get("ctrl+alt+t").handler(first.ctx);
+  expect(first.render()).toHaveLength(compact ? 2 : 1);
+  expect(first.tui.requestRender).toHaveBeenCalled();
+  expect(JSON.parse(readFileSync(configPath, "utf8"))).toEqual({ compact: !compact, hiddenAt: "bottom" });
+  await first.mock.fireLifecycle("session_shutdown", { reason: "quit" }, first.ctx);
+
+  const second = await startSession("second");
+  expect(second.render()).toHaveLength(compact ? 2 : 1);
+  await second.mock.fireLifecycle("session_shutdown", { reason: "quit" }, second.ctx);
 });
 
 describe("/add-task", () => {

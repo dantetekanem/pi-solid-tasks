@@ -8,7 +8,7 @@
  *   ✳/✽ actively executing task (star spinner with activeForm text)
  */
 
-import { truncateToWidth } from "@earendil-works/pi-tui";
+import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { hasHierarchy, taskProgress, taskTree } from "../task-hierarchy.js";
 import type { TaskStore } from "../task-store.js";
 import type { TasksConfig } from "../tasks-config.js";
@@ -60,6 +60,7 @@ export class TaskWidget {
   private activeTaskIds = new Set<string>();
   private waitingTaskId: string | undefined;
   private startedAtByTask = new Map<string, number>();
+  private elapsedByTask = new Map<string, number>();
   /** Cached TUI instance for requestRender() calls. */
   private tui: any | undefined;
   /** Whether the widget callback is currently registered. */
@@ -71,7 +72,24 @@ export class TaskWidget {
   ) {}
 
   setStore(store: TaskStore) {
+    this.dispose();
     this.store = store;
+  }
+
+  toggleCompact() {
+    this.config.compact = !this.config.compact;
+    this.update();
+  }
+
+  private elapsedTime(taskId: string): number {
+    const startedAt = this.startedAtByTask.get(taskId);
+    return (this.elapsedByTask.get(taskId) ?? 0) +
+      (startedAt === undefined ? 0 : Math.max(0, Date.now() - startedAt));
+  }
+
+  private stopTiming(taskId: string) {
+    this.elapsedByTask.set(taskId, this.elapsedTime(taskId));
+    this.startedAtByTask.delete(taskId);
   }
 
   setUICtx(ctx: UICtx) {
@@ -82,18 +100,24 @@ export class TaskWidget {
   setActiveTask(taskId: string | undefined, active = true) {
     if (taskId && active) {
       this.activeTaskIds.add(taskId);
-      if (!this.startedAtByTask.has(taskId)) {
+      if (taskId !== this.waitingTaskId && !this.startedAtByTask.has(taskId)) {
         this.startedAtByTask.set(taskId, Date.now());
       }
       this.ensureTimer();
     } else if (taskId) {
+      this.stopTiming(taskId);
       this.activeTaskIds.delete(taskId);
     }
     this.update();
   }
 
   setWaitingTask(taskId: string | undefined) {
+    const previous = this.waitingTaskId;
     this.waitingTaskId = taskId;
+    if (previous && previous !== taskId && this.activeTaskIds.has(previous)) {
+      this.startedAtByTask.set(previous, Date.now());
+    }
+    if (taskId) this.stopTiming(taskId);
     this.update();
   }
 
@@ -111,33 +135,57 @@ export class TaskWidget {
     const tasks = allTasks.filter(task => task.kind !== "group");
     const w = tui.terminal.columns;
     const truncate = (line: string) => truncateToWidth(line.replace(/[\r\n]+/g, " "), w);
+    const shortcut = theme.fg("dim", "  (toggle with ctrl+opt+t)");
+    const headerWidth = Math.max(0, w - visibleWidth(shortcut));
+    const withShortcut = (line: string) => truncate(truncateToWidth(line, headerWidth) + shortcut);
 
     if (allTasks.length === 0) return [];
 
     const completed = tasks.filter(t => t.status === "completed");
     const inProgress = tasks.filter(t => t.status === "in_progress");
     const pending = tasks.filter(t => t.status === "pending");
+    const separator = theme.fg("dim", " · ");
+
+    if (this.config.compact) {
+      const elapsed = tasks.reduce((sum, task) => sum + this.elapsedTime(task.id), 0);
+      const summary = [
+        theme.fg(completed.length > 0 ? "success" : "dim", `${completed.length}/${tasks.length} done`),
+        theme.fg("dim", formatDuration(elapsed)),
+      ].join(separator);
+      const current = inProgress.find(task =>
+        this.activeTaskIds.has(task.id) && task.id !== this.waitingTaskId,
+      ) ?? inProgress[0];
+      const parallel = inProgress.length > 1 ? ` +${inProgress.length - 1} active` : "";
+      let title = "";
+      if (current) {
+        const activity = current.id === this.waitingTaskId
+          ? `Waiting: ${current.subject}`
+          : `${current.activeForm || current.subject}…`;
+        title = `${activity}${parallel}`;
+      }
+      const prefix = theme.fg("accent", "●") + " " + theme.fg("text", `${tasks.length} tasks`) + separator;
+      const titleWidth = headerWidth - visibleWidth(prefix + summary) - visibleWidth(separator);
+      const titleColor = current?.id === this.waitingTaskId ? "muted" : "accent";
+      const label = title && titleWidth > 0
+        ? theme.fg(titleColor, truncateToWidth(title.replace(/[\r\n]+/g, " "), titleWidth)) + separator
+        : "";
+      const heading = headerWidth >= visibleWidth(prefix + summary) ? prefix : "";
+      return ["", withShortcut(heading + label + summary)];
+    }
 
     const parts: string[] = [];
-    if (completed.length > 0) parts.push(`${completed.length} done`);
-    if (inProgress.length > 0) parts.push(`${inProgress.length} in progress`);
-    if (pending.length > 0) parts.push(`${pending.length} open`);
+    if (completed.length > 0) parts.push(theme.fg("success", `${completed.length} done`));
+    if (inProgress.length > 0) parts.push(theme.fg("accent", `${inProgress.length} in progress`));
+    if (pending.length > 0) parts.push(theme.fg("text", `${pending.length} open`));
     const progress = taskProgress(allTasks);
-    const statusText = hierarchical
-      ? `${progress.completed}/${progress.total} tasks (${parts.join(", ") || "no tasks"}) - `
-      : `${tasks.length} tasks (${parts.join(", ")}) - `;
+    const taskCount = hierarchical ? `${progress.completed}/${progress.total}` : `${tasks.length}`;
+    const statusText = theme.fg("text", `${taskCount} tasks (`) +
+      (parts.join(theme.fg("dim", ", ")) || theme.fg("dim", "no tasks")) + theme.fg("text", ") - ");
 
     const spinnerChar = SPINNER[this.widgetFrame % SPINNER.length];
-    const percentage = theme.fg("accent", `${progress.percent}%`).replace(
-      /\x1b\[38;2;(\d+);(\d+);(\d+)m/g,
-      (_match: string, red: string, green: string, blue: string) => {
-        const whiteAlpha = 0.36;
-        const channels = [red, green, blue].map(Number);
-        const tintedRgb = channels.map(channel => Math.round(channel + (255 - channel) * whiteAlpha));
-        return `\x1b[38;2;${tintedRgb.join(";")}m`;
-      },
-    );
-    const lines: string[] = [truncate(theme.fg("accent", "●") + " " + theme.fg("accent", statusText) + percentage)];
+    const progressColor = progress.percent === 100 ? "success" : inProgress.length > 0 ? "accent" : "dim";
+    const percentage = theme.fg(progressColor, `${progress.percent}%`);
+    const lines: string[] = ["", withShortcut(theme.fg("accent", "●") + " " + statusText + percentage)];
 
     const limit = Math.min(this.config.maxVisible ?? MAX_VISIBLE_TASK_ROWS, MAX_VISIBLE_TASK_ROWS);
     const hiddenAt = this.config.hiddenAt ?? "bottom";
@@ -216,7 +264,7 @@ export class TaskWidget {
         const startedAt = this.startedAtByTask.get(task.id);
         let stats = "";
         if (startedAt !== undefined) {
-          const elapsed = formatDuration(Date.now() - startedAt);
+          const elapsed = formatDuration(this.elapsedTime(task.id));
           stats = ` ${theme.fg("dim", `(${elapsed})`)}`;
         }
         text = `  ${icon} ${theme.fg("dim", "#" + task.id)} ${theme.fg("accent", form + "…")}${stats}`;
@@ -242,8 +290,15 @@ export class TaskWidget {
     if (!this.uiCtx) return;
     const tasks = this.store.list();
 
+    for (const id of this.elapsedByTask.keys()) {
+      if (!tasks.some(task => task.id === id)) this.elapsedByTask.delete(id);
+    }
+
     // Transition: visible → hidden
     if (tasks.length === 0) {
+      this.activeTaskIds.clear();
+      this.startedAtByTask.clear();
+      this.waitingTaskId = undefined;
       if (this.widgetRegistered) {
         this.uiCtx.setWidget("tasks", undefined);
         this.widgetRegistered = false;
@@ -259,8 +314,8 @@ export class TaskWidget {
     for (const id of this.activeTaskIds) {
       const t = this.store.get(id);
       if (!t || t.status !== "in_progress") {
+        this.stopTiming(id);
         this.activeTaskIds.delete(id);
-        this.startedAtByTask.delete(id);
       }
     }
 
@@ -300,5 +355,9 @@ export class TaskWidget {
     }
     this.widgetRegistered = false;
     this.tui = undefined;
+    this.activeTaskIds.clear();
+    this.startedAtByTask.clear();
+    this.elapsedByTask.clear();
+    this.waitingTaskId = undefined;
   }
 }

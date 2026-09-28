@@ -5,6 +5,7 @@ import { homedir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 
 export interface TasksConfig {
+  compact?: boolean;                    // default: false
   taskScope?: "memory" | "session" | "project";  // default: "session"
   autoClearCompleted?: "never" | "on_list_complete" | "on_task_complete";  // default: "on_list_complete"
   showAll?: boolean;                     // legacy setting; the widget is always capped

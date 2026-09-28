@@ -37,7 +37,7 @@ import {
 import { registerTaskContinuation } from "./task-continuation.js";
 import { hasHierarchy, taskProgress, taskTree } from "./task-hierarchy.js";
 import { MAX_PARALLEL_RUNNING_TASKS, TaskPositionError, TaskStore, TaskUpdateError } from "./task-store.js";
-import { loadTasksConfig } from "./tasks-config.js";
+import { loadTasksConfig, saveTasksConfig } from "./tasks-config.js";
 import { openSettingsMenu } from "./ui/settings-menu.js";
 import { TaskWidget, type UICtx } from "./ui/task-widget.js";
 
@@ -123,6 +123,16 @@ export default function (pi: ExtensionAPI) {
   const tracker = new ProcessTracker();
   const widget = new TaskWidget(store, cfg);
   registerTaskContinuation(pi, () => store, taskId => widget.setWaitingTask(taskId));
+  pi.registerShortcut("ctrl+alt+t", {
+    description: "Toggle compact task list",
+    handler: ctx => {
+      widget.setUICtx(ctx.ui as UICtx);
+      upgradeStoreIfNeeded(ctx);
+      widget.toggleCompact();
+      saveTasksConfig({ ...loadTasksConfig(), compact: cfg.compact });
+    },
+  });
+  pi.on("session_shutdown", () => widget.dispose());
 
   const autoClear = new AutoClearManager(() => store, () => cfg.autoClearCompleted ?? "on_list_complete", AUTO_CLEAR_DELAY);
 
@@ -252,6 +262,7 @@ export default function (pi: ExtensionAPI) {
   // Rebind to the active Pi session on startup, /new, /resume, /fork, and /reload.
   // Session-scoped task state must follow Pi's session ID, not the project cwd.
   pi.on("session_start", async (event, ctx) => {
+    widget.dispose();
     widget.setUICtx(ctx.ui as UICtx);
 
     const isResume = event.reason === "resume";

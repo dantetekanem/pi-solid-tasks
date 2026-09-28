@@ -29,6 +29,7 @@ function setup() {
     },
     registerTool(tool: any) { tools.set(tool.name, tool); },
     registerCommand(name: string, command: any) { commands.set(name, command); },
+    registerShortcut: vi.fn(),
     events: { emit: vi.fn() }, sendMessage: vi.fn(), sendUserMessage: vi.fn(),
   };
   initExtension(pi as any);

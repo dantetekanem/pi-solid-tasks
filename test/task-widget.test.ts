@@ -34,14 +34,14 @@ function mockUICtx() {
   return { ctx, state };
 }
 
-/** Render the widget and return its lines. */
+/** Render the widget's content rows, excluding layout spacers. */
 function renderWidget(state: ReturnType<typeof mockUICtx>["state"], width = 200): string[] {
   const entry = state.widgets.get("tasks");
   if (!entry?.content) return [];
   const theme = mockTheme();
   const tui = { terminal: { columns: width }, requestRender() {} };
   const result = entry.content(tui, theme);
-  return result.render();
+  return result.render().filter((line: string) => line.length > 0);
 }
 
 describe("TaskWidget", () => {
@@ -60,6 +60,77 @@ describe("TaskWidget", () => {
   afterEach(() => {
     widget.dispose();
     vi.useRealTimers();
+  });
+
+  it("toggles a single-line leaf summary without changing tasks", () => {
+    const group = store.create("Project", "Desc", undefined, undefined, undefined, { kind: "group" });
+    const done = store.create("Done", "Desc", undefined, undefined, undefined, { parentId: group.id });
+    const current = store.create("Current", "Desc", "Working\n" + "界".repeat(100));
+    store.create("Later", "Desc");
+    store.create("Next", "Desc");
+    store.update(done.id, { status: "completed" });
+    store.update(current.id, { status: "in_progress" });
+    widget.setActiveTask(current.id);
+    const before = JSON.stringify(store.list());
+    const expanded = renderWidget(ui.state);
+
+    widget.toggleCompact();
+    for (const width of [40, 80, 200]) {
+      const lines = renderWidget(ui.state, width);
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).not.toMatch(/[\r\n]/);
+      expect(visibleWidth(lines[0])).toBeLessThanOrEqual(width);
+      expect(lines[0]).toContain("1/4 done");
+    }
+    expect(renderWidget(ui.state)[0]).toContain("4 tasks · Working");
+    widget.toggleCompact();
+    const withoutSpinner = (lines: string[]) => lines.map(line => line.replace(/[✳-✽]/g, "*"));
+    expect(withoutSpinner(renderWidget(ui.state))).toEqual(withoutSpinner(expanded));
+    expect(JSON.stringify(store.list())).toBe(before);
+  });
+
+  it("adds parallel task times, freezes completed work and pauses waiting time", () => {
+    for (const owner of ["a", "b"]) {
+      const task = store.create(owner, "Desc");
+      store.update(task.id, { status: "in_progress", owner });
+      widget.setActiveTask(task.id);
+    }
+    widget.toggleCompact();
+    vi.advanceTimersByTime(5000);
+    expect(renderWidget(ui.state)[0]).toContain("+1 active");
+    expect(renderWidget(ui.state)[0]).toContain(" · 10s");
+    store.update("2", { status: "completed" });
+    widget.setActiveTask("2", false);
+    widget.setWaitingTask("1");
+    vi.advanceTimersByTime(5000);
+    expect(renderWidget(ui.state)[0]).toContain("Waiting: a");
+    expect(renderWidget(ui.state)[0]).toContain(" · 10s");
+    widget.setWaitingTask(undefined);
+    vi.advanceTimersByTime(2000);
+    store.update("1", { status: "completed" });
+    widget.update();
+    vi.advanceTimersByTime(5000);
+    expect(renderWidget(ui.state)[0]).toContain("2/2 done · 12s");
+  });
+
+  it("resets recorded time when replacing or clearing the task list", () => {
+    store.create("Old", "Desc");
+    store.update("1", { status: "in_progress" });
+    widget.setActiveTask("1");
+    widget.toggleCompact();
+    vi.advanceTimersByTime(5000);
+    store = new TaskStore();
+    store.create("New", "Desc");
+    widget.setStore(store);
+    widget.update();
+    expect(renderWidget(ui.state)[0]).toContain("0/1 done · 0s");
+    store.clearAll();
+    widget.update();
+    expect(renderWidget(ui.state)).toEqual([]);
+    expect(vi.getTimerCount()).toBe(0);
+    store.create("Fresh", "Desc");
+    widget.update();
+    expect(renderWidget(ui.state)[0]).toContain(" · 0s");
   });
 
   it("marks the waiting task without persisting a status and resumes its active display", () => {

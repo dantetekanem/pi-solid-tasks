@@ -29,6 +29,7 @@ This package runs with full system access; review the source before installing.
 Describe the work in your normal prompt. The agent manages the task list for multi-step work; you do not need to call the task tools yourself.
 
 - `/tasks` opens the full list, manual controls, and settings.
+- `Ctrl+Alt+T` (`Control+Option+T` on Mac) toggles the widget between the task list and a one-line summary.
 - `/add-task <task>` adds a rough task for the agent to clarify and carry out. If the agent is busy, the request waits until its current run finishes.
 
 ```text
@@ -36,6 +37,14 @@ Describe the work in your normal prompt. The agent manages the task list for mul
 ```
 
 Tasks move from `pending` to `in_progress` to `completed`. The agent is instructed to verify the work before marking it complete. The extension checks task state, ownership, and dependencies; it cannot tell whether a fix is correct.
+
+The one-line view shows current work, completed/total progress, and summed task time:
+
+```text
+● 10 tasks · Implementing compact view… · 4/10 done · 12m 34s
+```
+
+Time adds each listed task's active intervals recorded since startup, reload, or session change, including completed work. Parallel intervals add together; waits pause timing. The view choice is saved across sessions and reloads. Narrow terminals shorten the current task first to preserve the counts.
 
 ## Features
 

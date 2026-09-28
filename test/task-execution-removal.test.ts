@@ -8,6 +8,7 @@ function registerExtension() {
   const pi = {
     registerTool(tool: any) { tools.set(tool.name, tool); },
     registerCommand: vi.fn(),
+    registerShortcut: vi.fn(),
     on: vi.fn(),
     events: {
       on: vi.fn(() => vi.fn()),

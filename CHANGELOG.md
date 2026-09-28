@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.8.16
+
+### Added
+
+- Toggle the task widget with `Ctrl+Alt+T` between the full list and a one-line view of current work, progress, and summed task time. The selected view persists across sessions and reloads.
+
+### Changed
+
+- Use consistent theme colors, top spacing, and a dim shortcut hint in both views.
+- Retain completed task timings in the current list and pause timing during waits. Reset timing when switching sessions or reloading.
+
 ## 0.8.15
 
 ### Fixed
