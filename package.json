@@ -24,11 +24,9 @@
     "coordination"
   ],
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": ">=0.85.1",
-    "@earendil-works/pi-tui": ">=0.74.0"
-  },
-  "dependencies": {
-    "typebox": "^1.1.34"
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*",
+    "typebox": "*"
   },
   "scripts": {
     "build": "tsc",
