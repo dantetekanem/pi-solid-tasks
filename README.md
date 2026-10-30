@@ -48,7 +48,7 @@ Time adds each listed task's active intervals recorded since startup, reload, or
 
 ## Features
 
-- One active task per owner. An agent cannot claim another task while it owns unfinished work. To abandon a task, it is instructed to undo the work before deleting the record.
+- One active task per owner. An agent cannot claim another task while it owns unfinished work. A genuine blocker stays visible with its cause recorded; the agent preserves partial work and reports what is needed. Deleting a record does not undo changes.
 - Dependencies checked before starting or finishing. Missing tasks and dependency loops are rejected without changing the list. Redundant dependencies are removed automatically.
 - Up to four tasks in progress with different owners. Independent work can proceed in parallel, but tasks cannot jump past earlier work unless another owner is working on it or it depends on the later task. This package tracks ownership; it does not launch agents.
 - Whole plans in one call. `tasks_create_in_batch` creates an ordered list, with optional groups and subtasks. An invalid batch creates nothing.
@@ -59,13 +59,19 @@ Time adds each listed task's active intervals recorded since startup, reload, or
 - Large batches broken into checkable work. Agent instructions require an inventory first when the items are unknown, then separate tasks or named batches before execution.
 - Reminders when unfinished work goes idle. After five idle minutes, Pi asks the agent to reassess what it can do. There are at most two reminders per user request.
 - Waiting for external results. `task_wait` pauses reminders when no other work can advance and a verified wake-up is registered. The task stays in progress. This requires a compatible wake-up provider; see the [wait requirements](prompts/task-wait.md).
-- Completion cleanup. `tasks_done` clears a finished list in one call and refuses while anything remains unfinished. The agent is instructed to use it before its final response unless you ask to keep the records.
+- Completion cleanup. `tasks_done` clears a verified finished list and refuses while anything remains unfinished. A blocker report may end a turn without cleanup; partial work must not be marked complete just to clear the list.
 
 See the [changelog](CHANGELOG.md) for release history.
 
+## Scope and blockers
+
+The active list tracks authorized work. Unapproved ideas belong in a separate follow-up note, not in the execution queue. Instructions favor direct execution for trivial requests and reserve task lists for work that benefits from tracking.
+
+When a task needs a user decision or unavailable access, its owner records that blocker in the description or metadata and reports it without discarding work. Its status remains unchanged; this is not a new `blocked` status or permission to skip ownership and dependency checks. `task_wait` remains limited to its verified external-wake contract.
+
 ## Idle reminders
 
-Idle reminders start agent turns and pause for open question dialogs. Cancellation and model errors do not trigger automatic retries. Opening or reloading a session does not start work.
+Idle reminders start agent turns and pause for open question dialogs. They ask the agent to reassess authorized work, not force a tool call or clear blocked tasks. A metadata blocker does not suppress the timer; only the existing dialog/wake rules do. Cancellation and model errors do not trigger automatic retries. Opening or reloading a session does not start work.
 
 ## Settings and storage
 

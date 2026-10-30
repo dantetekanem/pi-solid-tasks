@@ -554,90 +554,7 @@ describe("core task tools", () => {
       expect(mock.tools.has(name)).toBe(true);
     }
     expect(mock.tools.has("task_execute")).toBe(false);
-  });
-
-  it("requires discovery tasks to expand repeated work into bounded execution tasks", () => {
-    const mock = mockPi();
-    initExtension(mock.pi as any);
-    const taskCreate = mock.tools.get("task_create");
-    const guidance = [taskCreate.description, ...taskCreate.promptGuidelines].join("\n");
-
-    expect(guidance).toContain("inventory task");
-    expect(guidance).toContain("more than five");
-    expect(guidance).toContain("before changing any discovered item");
-    expect(guidance).toContain("Do not perform the discovered bulk execution inside the inventory task");
-    expect(guidance).toContain("4–5 items");
-    expect(guidance).toContain("exact items");
-    expect(guidance).toContain("keep pending follow-up tasks visible");
-    expect(guidance).toContain("ready independent tasks");
-    expect(guidance).toContain("all declared dependencies");
-    expect(guidance).toContain("distinct owner");
-    expect(guidance).not.toContain("exactly the earliest runnable task in_progress");
-    expect(guidance).not.toContain("Keep one top-level task in_progress");
-  });
-
-  it("describes ready parallel ownership and all-of dependency semantics", () => {
-    const mock = mockPi();
-    initExtension(mock.pi as any);
-    const descriptions = ["task_list", "task_get", "task_update"]
-      .map(name => mock.tools.get(name).description)
-      .join("\n");
-
-    expect(descriptions).toContain("ready");
-    expect(descriptions).toContain("parallel");
-    expect(descriptions).toContain("all");
-    expect(descriptions).toContain("owner");
-    expect(descriptions).toContain("blockedBy");
-    expect(descriptions).toContain("immediate prerequisites");
-    expect(descriptions).toContain("redundant transitive");
-    expect(descriptions).toContain("earlier");
-    expect(descriptions).toContain("actively owned by another owner");
-    expect(descriptions).toContain("At most 4 tasks can be in progress at once");
-  });
-
-  it("keeps outside-milestone findings nonblocking while preserving genuine prerequisites", () => {
-    const mock = mockPi();
-    initExtension(mock.pi as any);
-    const taskCreate = mock.tools.get("task_create");
-    const guidance = [taskCreate.description, ...taskCreate.promptGuidelines].join("\n");
-
-    expect(guidance).toContain("frozen acceptance criteria");
-    expect(guidance).toContain("threat model");
-    expect(guidance).toContain("exercised slice");
-    expect(guidance).toContain("fix a failure in the currently exercised slice");
-    expect(guidance).toContain("genuine prerequisite");
-    expect(guidance).toContain("immediate data loss, privacy/security breach, or irreversibility");
-    expect(guidance).toContain("pending, nonblocking follow-ups");
-    expect(guidance).toContain("append them after current milestone work");
-    expect(guidance).toContain("do not move them ahead");
-    expect(guidance).toContain("or serialize unrelated hardening before a user-visible vertical slice");
-    expect(guidance).toContain("Never use this rule to skip genuinely blocking work");
-    expect(guidance).toContain("append outside-scope follow-ups after existing work");
-    expect(guidance).toContain("only when they are genuine prerequisites");
-    expect(guidance).toContain("all declared blockedBy dependencies must be completed");
-    expect(guidance).toContain("distinct owner");
-    expect(guidance).toContain("finish or undo its current task before claiming another");
-    expect(guidance).toContain("add only immediate prerequisites with addBlockedBy");
-  });
-
-  it("requires each owner to finish or undo its current task before moving on", () => {
-    const mock = mockPi();
-    initExtension(mock.pi as any);
-    const taskCreate = mock.tools.get("task_create");
-    const taskUpdate = mock.tools.get("task_update");
-    const guidance = [
-      taskCreate.description,
-      ...taskCreate.promptGuidelines,
-      taskUpdate.description,
-    ].join("\n");
-
-    expect(guidance).toContain("finish or undo");
-    expect(guidance).toContain("before claiming another task");
-    expect(guidance).toContain("undo every change and side effect");
-    expect(guidance).toContain("delete the task");
-    expect(guidance).not.toContain("keep the task as in_progress");
-    expect(guidance).not.toContain("unless it is explicitly handed off");
-    expect(taskUpdate.parameters.properties.status.enum).toEqual(["in_progress", "completed", "deleted"]);
+    expect(mock.tools.get("task_update").parameters.properties.status.enum).toEqual(["in_progress", "completed", "deleted"]);
   });
 
   it("starts independent tasks concurrently and clears only fully completed lists", async () => {
@@ -787,8 +704,6 @@ describe("core task tools", () => {
     const taskCreate = mock.tools.get("task_create");
 
     expect(taskCreate.parameters.properties.position).toBeDefined();
-    expect(taskCreate.description).toContain("beginning of open tasks");
-    expect(taskCreate.description).toContain("end of open tasks");
 
     await mock.executeTool("task_create", { subject: "First", description: "desc" });
     await mock.executeTool("task_create", { subject: "Second", description: "desc" });

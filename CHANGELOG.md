@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.8.18
+
+### Changed
+
+- Keep blocked work and partial progress visible instead of instructing agents to undo work or clear unfinished tasks.
+- Shorten task prompts and clarify authorization, ownership, completion, and reminder rules.
+
 ## 0.8.17
 
 ### Compatibility

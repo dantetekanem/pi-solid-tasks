@@ -1,27 +1,3 @@
-Use this tool to retrieve a task by its ID from the task list.
+Read one task by taskId when its full details are missing or stale. Do not refetch a current task_done handoff.
 
-## When to Use This Tool
-
-- When you need the full description and context and it is not already available in a current task_done handoff or other tool result
-- To understand task dependencies (what it blocks, what blocks it)
-- After being assigned a task, if its complete requirements were not provided
-
-A task_done handoff already contains the next task's full details. Do not fetch them again unless the context is stale or incomplete.
-
-## Output
-
-Returns full task details:
-- **subject**: Task title
-- **description**: Detailed requirements and context
-- **status**: 'pending', 'in_progress', or 'completed'
-- **blocks**: Tasks waiting on this one to complete
-- **blockedBy**: Immediate prerequisite tasks that must complete before this one can start
-
-Redundant transitive blockers are omitted. If #3 depends on #2, a task blocked by both #2 and #3 retains only immediate prerequisite #3.
-
-## Tips
-
-- A pending task is ready when every blockedBy prerequisite is completed, no other owner has claimed it, and starting it would not skip earlier open work.
-- Independent tasks may run in parallel when earlier work is active under a distinct owner.
-- At most {{maxParallelTasks}} tasks can be in progress at once; keep the next ready task pending in the queue.
-- Use task_list to see all tasks in summary form.
+Returns subject, description, status, and immediate blocks/blockedBy relationships; redundant transitive prerequisites are removed. Use task_list for a broader queue overview. Readiness still requires satisfied dependencies, available ownership, and allowed queue order.
