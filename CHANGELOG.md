@@ -2,6 +2,22 @@
 
 ## 0.8.18
 
+### Release status (checked 2026-11-01)
+
+Prepared in source, not yet published to the public npm registry:
+
+- Commit `4c64ae211e2cd65e02a894cb7e50908291963fb8` (October 29) sets `package.json` to `0.8.18` and includes the changes below: https://github.com/dantetekanem/pi-solid-tasks/commit/4c64ae211e2cd65e02a894cb7e50908291963fb8
+- The public registry lists `latest` as `0.8.17` and has no `0.8.18` version: https://registry.npmjs.org/pi-solid-tasks
+- No remote `v0.8.18` tag or retained publication workflow run was found. The latest listed run is the successful `v0.8.17` run: https://github.com/dantetekanem/pi-solid-tasks/actions/runs/36762869545
+
+Publication requires separate approval. Once authorized, the remaining steps are:
+
+1. Confirm the intended release commit and run `pnpm install --frozen-lockfile` and `pnpm check` there.
+2. Push the matching `v0.8.18` tag to trigger `.github/workflows/publish.yml`. It checks the version and stages the package with provenance; a successful run alone does not make the package public.
+3. Approve the staged package through npm, then verify that the public registry contains `0.8.18` and that `latest` points to it. Update this status after verification.
+
+The private npm staging queue was not inspected. These checks do not establish whether a package was staged outside the retained GitHub workflow history. No tag, staging, or publication action was taken for this status check.
+
 ### Changed
 
 - Keep blocked work and partial progress visible instead of instructing agents to undo work or clear unfinished tasks.
